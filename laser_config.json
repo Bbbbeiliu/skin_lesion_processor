@@ -1,0 +1,19 @@
+{
+  "laser_params": {
+    "default_pen": 0,
+    "mark_speed": 100.0,
+    "power_ratio": 80.0,
+    "frequency": 20000,
+    "current": 20.0,
+    "q_pulse_width": 100,
+    "jump_speed": 500.0,
+    "start_delay": 100,
+    "end_delay": 100
+  },
+  "file_settings": {
+    "default_output_dir": "output",
+    "auto_clear_previous": true,
+    "backup_before_cut": true
+  },
+  "operating_mode": "simulation"
+}
