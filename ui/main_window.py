@@ -301,14 +301,19 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def arrange_contours(self):
-        """自动排列所有轮廓（修复重叠问题的装箱算法）"""
+        """自动排列所有轮廓到10cm直径的圆形工作区域"""
         if not self.canvas.contours:
             return
 
-        # 初始化装箱算法参数
+        # 画布尺寸（像素）
         container_width = self.canvas.canvas_width_px
         container_height = self.canvas.canvas_height_px
         padding = 40  # 轮廓间的最小间距
+
+        # 计算圆形工作区域（直径10cm，圆心在画布中心）
+        center_x = container_width / 2
+        center_y = container_height / 2
+        radius = 5 * self.canvas.pixels_per_cm  # 半径5cm转换为像素
 
         # 计算每个轮廓的显示尺寸并存储到列表
         contours_with_size = []
@@ -327,7 +332,7 @@ class MainWindow(QMainWindow):
                 'contour': contour,
                 'width': width + padding,
                 'height': height + padding,
-                'placed': False  # 添加标记是否已放置
+                'placed': False
             })
 
         # 按面积从大到小排序
@@ -335,6 +340,21 @@ class MainWindow(QMainWindow):
 
         # 存储已放置轮廓的位置和尺寸
         placed_rects = []
+
+        # 定义辅助函数：检查矩形是否完全在圆内
+        def rect_in_circle(rect, center, radius):
+            corners = [
+                rect.topLeft(),
+                rect.topRight(),
+                rect.bottomLeft(),
+                rect.bottomRight()
+            ]
+            for corner in corners:
+                dx = corner.x() - center.x()
+                dy = corner.y() - center.y()
+                if dx * dx + dy * dy > radius * radius:
+                    return False
+            return True
 
         # 遍历所有轮廓进行放置
         for item in contours_with_size:
@@ -345,16 +365,16 @@ class MainWindow(QMainWindow):
             placed = False
 
             # 尝试在画布上寻找合适的位置（从左上角开始扫描）
-            for y in range(padding, container_height - int(height), 10):  # 10像素步进
+            for y in range(padding, container_height - int(height), 10):
                 if placed:
                     break
-
                 for x in range(padding, container_width - int(width), 10):
-                    if placed:
-                        break
-
                     # 创建候选矩形
                     candidate_rect = QRectF(x, y, width, height)
+
+                    # 检查是否在圆形工作区域内
+                    if not rect_in_circle(candidate_rect, QPointF(center_x, center_y), radius):
+                        continue
 
                     # 检查是否与已放置的矩形重叠
                     overlap = False
@@ -369,18 +389,40 @@ class MainWindow(QMainWindow):
                         placed_rects.append(candidate_rect)
                         item['placed'] = True
                         placed = True
+                        break
 
-            # 如果找不到合适位置，放在第一个可用位置（可能重叠）
+            # 如果找不到合适位置，尝试将轮廓中心与圆心对齐
             if not placed:
-                x = padding
-                y = padding
+                best_x = center_x - width / 2
+                best_y = center_y - height / 2
+                # 约束到画布边界内（防止超出画布）
+                best_x = max(padding, min(best_x, container_width - width))
+                best_y = max(padding, min(best_y, container_height - height))
+                candidate_rect = QRectF(best_x, best_y, width, height)
+
+                if rect_in_circle(candidate_rect, QPointF(center_x, center_y), radius):
+                    # 检查与已放置矩形重叠
+                    overlap = any(candidate_rect.intersects(pr) for pr in placed_rects)
+                    if not overlap:
+                        contour.position = QPointF(best_x, best_y)
+                        placed_rects.append(candidate_rect)
+                        item['placed'] = True
+                        placed = True
+
+            # 如果仍然找不到，使用最后的回退位置（圆心附近，可能超出圆，但保证在画布内）
+            if not placed:
+                x = center_x - width / 2
+                y = center_y - height / 2
+                x = max(padding, min(x, container_width - width))
+                y = max(padding, min(y, container_height - height))
                 contour.position = QPointF(x, y)
                 placed_rects.append(QRectF(x, y, width, height))
                 item['placed'] = True
+                print(f"警告：轮廓 {contour.label} 无法完全放入圆形工作区，已放置在圆心附近，可能超出边界。")
 
         self.canvas.update()
         placed_count = sum(1 for item in contours_with_size if item['placed'])
-        self.statusBar().showMessage(f"已自动排列 {placed_count} 个轮廓")
+        self.statusBar().showMessage(f"已自动排列 {placed_count} 个轮廓到直径10cm圆形区域")
 
     def clear_contours(self):
         """清空所有轮廓"""
@@ -544,83 +586,126 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("轮廓已更新")
 
     def save_contours(self):
-        """保存轮廓数据"""
+        """保存轮廓数据，支持多种格式"""
         try:
-            if not self.canvas.contours:
-                QMessageBox.warning(self, "警告", "没有轮廓数据可以保存！")
-                return
-
-            # 选择保存格式
+            # 扩展文件选择对话框的过滤器
             file_path, selected_filter = QFileDialog.getSaveFileName(
                 self, "保存轮廓数据", "",
-                "DXF文件 (*.dxf);;JSON文件 (*.json);;所有文件 (*.*)"
+                "DXF文件 (*.dxf);;JSON文件 (*.json);;EZCAD文件 (*.ezd);;PNG图像 (*.png);;BMP图像 (*.bmp);;JPEG图像 (*.jpg *.jpeg);;所有文件 (*.*)"
             )
 
             if not file_path:
                 return
 
-            # 根据选择的过滤器确定格式
-            if selected_filter == "DXF文件 (*.dxf)" or file_path.lower().endswith('.dxf'):
-                # 保存为DXF格式
+            # 获取文件扩展名（小写）
+            ext = Path(file_path).suffix.lower()
+
+            # ========== 图像格式导出（不需要轮廓） ==========
+            if ext in ['.png', '.bmp', '.jpg', '.jpeg'] or any(x in selected_filter for x in ['PNG', 'BMP', 'JPEG']):
+                # 补充默认扩展名
+                if not ext:
+                    if 'PNG' in selected_filter:
+                        file_path += '.png'
+                    elif 'BMP' in selected_filter:
+                        file_path += '.bmp'
+                    elif 'JPEG' in selected_filter:
+                        file_path += '.jpg'
+                    else:
+                        file_path += '.png'
+
+                # 抓取画布内容并保存
+                # 生成仅包含轮廓和标号的图像
+                pixmap = self.canvas.render_contours_only(background_color=Qt.white, draw_labels=True)
+                if file_path.lower().endswith(('.jpg', '.jpeg')):
+                    pixmap.save(file_path, "JPEG", quality=95)
+                else:
+                    pixmap.save(file_path)
+
+                self.statusBar().showMessage(f"画布图像已保存到: {file_path}")
+                QMessageBox.information(self, "成功", "画布图像已保存！")
+                return
+
+            # ========== 以下格式需要轮廓存在 ==========
+            if not self.canvas.contours:
+                QMessageBox.warning(self, "警告", "没有轮廓数据可以保存！")
+                return
+
+            # ---------- EZCAD 格式（实际使用 DXF 内容） ----------
+            if ext == '.ezd' or (selected_filter == "EZCAD文件 (*.ezd)" and not ext):
+                if not ext:
+                    file_path += '.ezd'
                 success = DXFExporter.export_to_dxf(
                     self.canvas.contours,
                     self.canvas.pixels_per_cm,
                     file_path
                 )
+                if success:
+                    self.statusBar().showMessage(f"轮廓数据已保存为EZCAD格式: {file_path}")
+                    QMessageBox.information(self, "成功", f"成功保存 {len(self.canvas.contours)} 个轮廓到EZCAD文件！")
+                else:
+                    QMessageBox.critical(self, "错误", "保存EZCAD文件失败！")
+                return
 
+            # ---------- DXF 格式 ----------
+            if ext == '.dxf' or (selected_filter == "DXF文件 (*.dxf)" and not ext):
+                if not ext:
+                    file_path += '.dxf'
+                success = DXFExporter.export_to_dxf(
+                    self.canvas.contours,
+                    self.canvas.pixels_per_cm,
+                    file_path
+                )
                 if success:
                     self.statusBar().showMessage(f"轮廓数据已保存为DXF: {file_path}")
                     QMessageBox.information(self, "成功", f"成功保存 {len(self.canvas.contours)} 个轮廓到DXF文件！")
                 else:
                     QMessageBox.critical(self, "错误", "保存DXF文件失败！")
+                return
 
-            else:
-                # 默认为JSON格式
-                if not file_path.lower().endswith('.json'):
-                    file_path += '.json'
+            # ---------- JSON 格式（默认） ----------
+            if not file_path.lower().endswith('.json'):
+                file_path += '.json'
 
-                data = []
-                for contour in self.canvas.contours:
-                    # 确保original_points是列表格式
-                    points_list = contour.original_points.tolist() if hasattr(contour.original_points, 'tolist') else []
-
-                    contour_data = {
-                        "id": contour.id,
-                        "label": contour.label,  # 添加标号
-                        "source_image": contour.source_image,
-                        "position": {
-                            "x": float(contour.position.x()),
-                            "y": float(contour.position.y())
-                        },
-                        "scale": float(contour.scale),
-                        "precision": contour.precision,  # 添加拟合精度
-                        "original_points": points_list,
-                        "nurbs_points": [
-                            {"x": float(p.x()), "y": float(p.y())}
-                            for p in contour.nurbs_points
-                        ],
-                        "color": {
-                            "r": contour.color.red(),
-                            "g": contour.color.green(),
-                            "b": contour.color.blue()
-                        }
+            data = []
+            for contour in self.canvas.contours:
+                points_list = contour.original_points.tolist() if hasattr(contour.original_points, 'tolist') else []
+                contour_data = {
+                    "id": contour.id,
+                    "label": contour.label,
+                    "source_image": contour.source_image,
+                    "position": {
+                        "x": float(contour.position.x()),
+                        "y": float(contour.position.y())
+                    },
+                    "scale": float(contour.scale),
+                    "precision": contour.precision,
+                    "original_points": points_list,
+                    "nurbs_points": [
+                        {"x": float(p.x()), "y": float(p.y())}
+                        for p in contour.nurbs_points
+                    ],
+                    "color": {
+                        "r": contour.color.red(),
+                        "g": contour.color.green(),
+                        "b": contour.color.blue()
                     }
-                    data.append(contour_data)
-
-                # 添加标号映射信息
-                mapping_data = {
-                    "label_mapping": [
-                        {"label": label, "image": image}
-                        for label, image in self.label_to_image_map.items()
-                    ]
                 }
-                data.append({"metadata": mapping_data})
+                data.append(contour_data)
 
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
+            # 添加标号映射信息
+            mapping_data = {
+                "label_mapping": [
+                    {"label": label, "image": image}
+                    for label, image in self.label_to_image_map.items()
+                ]
+            }
+            data.append({"metadata": mapping_data})
 
-                self.statusBar().showMessage(f"轮廓数据已保存到: {file_path}")
-                QMessageBox.information(self, "成功", f"成功保存 {len(data) - 1} 个轮廓数据！")
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+            self.statusBar().showMessage(f"轮廓数据已保存到: {file_path}")
+            QMessageBox.information(self, "成功", f"成功保存 {len(data) - 1} 个轮廓数据！")
 
         except ImportError as e:
             QMessageBox.critical(self, "DXF导出错误", f"{str(e)}\n\n请安装ezdxf库: pip install ezdxf")

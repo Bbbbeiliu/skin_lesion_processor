@@ -9,7 +9,7 @@ from typing import List, Optional, Dict, Any
 from PyQt5.QtWidgets import QWidget, QApplication  # 添加 QApplication 导入
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QRectF, QSizeF
 from PyQt5.QtGui import (QPainter, QPen, QColor, QBrush, QPainterPath,
-                         QFont, QFontMetrics, QMouseEvent, QCursor)
+                         QFont, QFontMetrics, QMouseEvent, QCursor, QPixmap)
 
 from core.contour import Contour
 from core.image_processor import AdvancedImageProcessor, GEOMDL_AVAILABLE
@@ -251,29 +251,36 @@ class CanvasWidget(QWidget):
             print(f"绘制轮廓错误: {str(e)}")
 
     def draw_contour_label(self, painter: QPainter, contour: Contour):
-        """绘制轮廓标号"""
+        """绘制轮廓标号（放在轮廓内部中心）"""
         try:
             painter.save()
 
-            # **关键修改：不要使用轮廓变换，直接在显示坐标中绘制**
             display_rect = contour.get_display_rect()
             if display_rect.isNull():
                 painter.restore()
                 return
 
-            # 在显示坐标中直接绘制标号
-            label_center_x = display_rect.left() - 20  # 距离轮廓左侧15像素
-            label_center_y = display_rect.center().y()
+            # 计算轮廓宽度（毫米），小于0.5mm不标号
+            width_mm = display_rect.width() * 10 / self.pixels_per_cm
+            if width_mm < 5:
+                painter.restore()
+                return
 
-            # 使用固定大小的标号，不受缩放影响
-            label_size = 15
+            # 标号中心点（轮廓显示矩形中心）
+            label_center = display_rect.center()
+
+            # 标号圆形直径（像素），取轮廓宽度的1/5，限制在2mm～10mm
+            diameter_px = display_rect.width() / 5
+            min_diameter_px = 2 * self.pixels_per_cm / 10  # 2mm
+            max_diameter_px = 10 * self.pixels_per_cm / 10  # 10mm
+            diameter_px = max(min_diameter_px, min(diameter_px, max_diameter_px))
 
             # 绘制圆形背景
             circle_rect = QRectF(
-                label_center_x - label_size / 2,
-                label_center_y - label_size / 2,
-                label_size+10,
-                label_size+10
+                label_center.x() - diameter_px / 2,
+                label_center.y() - diameter_px / 2,
+                diameter_px,
+                diameter_px
             )
 
             # 根据是否选中设置颜色
@@ -293,17 +300,15 @@ class CanvasWidget(QWidget):
                 painter.setPen(QPen(QColor(0, 0, 0), 1))
 
             font = painter.font()
-            font.setPointSize(label_size)
+            font.setPointSizeF(diameter_px * 0.6)  # 字体大小约为直径的0.6倍
             font.setBold(True)
             painter.setFont(font)
 
-            # 确保有文本内容
             label_text = str(contour.label) if contour.label > 0 else ""
             if label_text:
                 painter.drawText(circle_rect, Qt.AlignCenter, label_text)
 
             painter.restore()
-
         except Exception as e:
             print(f"绘制标号错误: {str(e)}")
 
@@ -897,6 +902,27 @@ class CanvasWidget(QWidget):
         except Exception as e:
             print(f"重新拟合轮廓失败: {str(e)}")
             traceback.print_exc()
+
+    def render_contours_only(self, background_color=Qt.white, draw_labels=True):
+        """
+        生成仅包含轮廓（和标号）的图像，背景为指定颜色，不包含网格、边框等。
+        :param background_color: 背景颜色（默认为白色）
+        :param draw_labels: 是否绘制标号（默认 True）
+        :return: QPixmap 对象
+        """
+        pixmap = QPixmap(self.canvas_width_px, self.canvas_height_px)
+        pixmap.fill(background_color)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # 绘制所有轮廓（不应用视图变换，直接使用轮廓自身的位置和缩放）
+        for contour in self.contours:
+            self.draw_contour(painter, contour)
+            if draw_labels and contour.label > 0 and self.show_labels:
+                self.draw_contour_label(painter, contour)
+
+        painter.end()
+        return pixmap
 
     def paintEvent(self, event):
         """绘制事件"""
