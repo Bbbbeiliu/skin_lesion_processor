@@ -80,6 +80,130 @@ class Contour:
         # 返回以中心点为基准的矩形
         return QRectF(center_x - width / 2, center_y - height / 2, width, height)
 
+    def get_geometric_center(self) -> QPointF:
+        """计算轮廓的几何中心（基于NURBS点的平均值）"""
+        if not self.nurbs_points:
+            return QPointF(0, 0)
+        # 计算局部坐标的平均值
+        sum_x = sum(p.x() for p in self.nurbs_points)
+        sum_y = sum(p.y() for p in self.nurbs_points)
+        n = len(self.nurbs_points)
+        local_center = QPointF(sum_x / n, sum_y / n)
+        # 转换为显示坐标
+        display_rect = self.get_display_rect()
+        if display_rect.isNull():
+            return QPointF(0, 0)
+        bbox_tl = self.bounding_box.topLeft()
+        scale = self.scale
+        # 显示坐标 = 显示矩形左上角 + (局部点 - 包围盒左上角) * scale
+        display_x = display_rect.left() + (local_center.x() - bbox_tl.x()) * scale
+        display_y = display_rect.top() + (local_center.y() - bbox_tl.y()) * scale
+        return QPointF(display_x, display_y)
+
+    from PyQt5.QtCore import QPointF
+
+    def get_label_position(self, pixels_per_cm: float, font_size_mm: float, min_size_mm: float,
+                           step_ratio: float = 0.5):
+        """
+        在轮廓内部寻找一个能容纳标号的矩形区域，返回其中心点的显示坐标和竖直距离（局部像素）。
+        :param pixels_per_cm: 像素/厘米
+        :param font_size_mm: 字体高度（毫米）
+        :param min_size_mm: 轮廓最小尺寸阈值（毫米），小于此值不标
+        :param step_ratio: 扫描步长与字体宽度的比例
+        :return: (QPointF or None, float) 显示坐标和竖直距离（局部像素），若未找到则返回 (None, 0)
+        """
+        if not self.nurbs_points or len(self.nurbs_points) < 3:
+            return None, 0
+
+        # 计算局部像素中的字体宽度和最小尺寸阈值
+        # 显示像素中的字体大小 = font_size_mm * (pixels_per_cm / 10)
+        # 局部像素大小 = 显示像素大小 / scale
+        font_size_local = font_size_mm * (pixels_per_cm / 10) / self.scale
+        min_size_local = min_size_mm * (pixels_per_cm / 10) / self.scale
+
+        # 如果轮廓包围盒尺寸过小，直接返回
+        bbox_width = self.bounding_box.width()
+        bbox_height = self.bounding_box.height()
+        if bbox_width < min_size_local or bbox_height < min_size_local:
+            return None, 0
+
+        pts = [(p.x(), p.y()) for p in self.nurbs_points]
+        x_min = min(p[0] for p in pts)
+        x_max = max(p[0] for p in pts)
+        step = max(1.0, font_size_local * step_ratio)
+
+        best_point = None
+        best_score = -1
+        best_vertical_dist = 0
+
+        # 从左到右扫描
+        x = x_min
+        while x <= x_max:
+            # 获取竖直线与轮廓的交点
+            intersections = []
+            for j in range(len(pts)):
+                p1 = pts[j]
+                p2 = pts[(j + 1) % len(pts)]
+                if (p1[0] <= x <= p2[0]) or (p2[0] <= x <= p1[0]):
+                    if p1[0] == p2[0]:
+                        # 垂直线段，跳过或取中点？此处忽略以避免无穷多交点
+                        continue
+                    t = (x - p1[0]) / (p2[0] - p1[0])
+                    y = p1[1] + t * (p2[1] - p1[1])
+                    intersections.append(y)
+
+            if intersections:
+                intersections.sort()
+                # 将交点配对为区间（假设轮廓是闭合的，交点数为偶数）
+                for k in range(0, len(intersections), 2):
+                    if k + 1 >= len(intersections):
+                        break
+                    y1 = intersections[k]
+                    y2 = intersections[k + 1]
+                    dist_y = y2 - y1
+                    if dist_y >= font_size_local:
+                        y_mid = (y1 + y2) / 2
+
+                        # 通过 (x, y_mid) 作水平线，检查水平跨度
+                        h_intersections = []
+                        for j in range(len(pts)):
+                            p1 = pts[j]
+                            p2 = pts[(j + 1) % len(pts)]
+                            if (p1[1] <= y_mid <= p2[1]) or (p2[1] <= y_mid <= p1[1]):
+                                if p1[1] == p2[1]:
+                                    continue
+                                t = (y_mid - p1[1]) / (p2[1] - p1[1])
+                                x_h = p1[0] + t * (p2[0] - p1[0])
+                                h_intersections.append(x_h)
+
+                        if h_intersections:
+                            h_intersections.sort()
+                            for hk in range(0, len(h_intersections), 2):
+                                if hk + 1 >= len(h_intersections):
+                                    break
+                                x1_h = h_intersections[hk]
+                                x2_h = h_intersections[hk + 1]
+                                if x1_h <= x <= x2_h:
+                                    dist_x = x2_h - x1_h
+                                    if dist_x >= font_size_local:
+                                        # 评分：以竖直距离为基准，越大越好
+                                        score = dist_y
+                                        if score > best_score:
+                                            best_score = score
+                                            best_vertical_dist = dist_y
+                                            # 将局部点转换为显示坐标
+                                            display_rect = self.get_display_rect()
+                                            bbox_tl = self.bounding_box.topLeft()
+                                            display_x = display_rect.left() + (x - bbox_tl.x()) * self.scale
+                                            display_y = display_rect.top() + (y_mid - bbox_tl.y()) * self.scale
+                                            best_point = QPointF(display_x, display_y)
+                                        break  # 只取包含 x 的那个区间
+            x += step
+
+        if best_point is not None:
+            return best_point, best_vertical_dist
+        else:
+            return None, 0
 
     # def set_size(self, width_cm: float, height_cm: float, pixels_per_cm: float):
     #     """设置包围盒大小（厘米单位）"""
