@@ -319,5 +319,3 @@ class ControlPanel(QWidget):
         layout.addWidget(btn_show_label_mapping)
 
         layout.addStretch()
-
-

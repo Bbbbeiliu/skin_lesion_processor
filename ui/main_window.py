@@ -54,7 +54,9 @@ class MainWindow(QMainWindow):
         self.init_ui()
         # 更新状态显示
         self.update_status_display()
-
+        # 轮廓画布分页
+        self.pages_contours = []  # 分页后的轮廓列表
+        self.current_page = 0  # 当前显示的页码
         # 创建模拟可视化窗口（可选显示）
         self.simulation_widget = SimulationWidget()
         self.simulation_widget.simulation_completed.connect(self._on_simulation_completed)
@@ -96,18 +98,41 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
-        # 创建画布
+        # 创建控制面板（左侧）
+        control_panel = self.create_control_panel()
+
+        # 创建画布容器（右侧，垂直布局）
+        canvas_container = QWidget()
+        canvas_layout = QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 画布
         self.canvas = CanvasWidget()
         self.canvas.contour_selected.connect(self.on_contour_selected)
         self.canvas.contour_changed.connect(self.on_contour_changed)
+        canvas_layout.addWidget(self.canvas)
 
+        # 翻页栏（放在画布下方）
+        page_widget = QWidget()
+        page_layout = QHBoxLayout(page_widget)
+        page_layout.setContentsMargins(0, 5, 0, 0)
 
-        # 创建控制面板
-        control_panel = self.create_control_panel()
+        self.btn_prev = QPushButton("◀ 上一页")
+        self.btn_prev.clicked.connect(self.prev_page)
+        self.btn_next = QPushButton("下一页 ▶")
+        self.btn_next.clicked.connect(self.next_page)
+        self.lbl_page = QLabel("第 1 页 / 共 1 页")
+        self.lbl_page.setAlignment(Qt.AlignCenter)
 
-        # 添加控件到布局
+        page_layout.addWidget(self.btn_prev)
+        page_layout.addWidget(self.lbl_page)
+        page_layout.addWidget(self.btn_next)
+
+        canvas_layout.addWidget(page_widget)
+
+        # 将控制面板和画布容器添加到主布局
         main_layout.addWidget(control_panel, 1)
-        main_layout.addWidget(self.canvas, 3)
+        main_layout.addWidget(canvas_container, 3)
 
         # 创建菜单栏
         self.create_menu_bar()
@@ -117,10 +142,11 @@ class MainWindow(QMainWindow):
         self.status_progress = QProgressBar()
         self.status_progress.setVisible(False)
         self.statusBar().addPermanentWidget(self.status_progress)
+
         # 添加快捷键
         self.canvas.setFocusPolicy(Qt.StrongFocus)
 
-        # 添加激光控制功能区
+        # 添加激光控制功能区（如原代码）
         self.init_laser_control_panel()
 
     def create_control_panel(self) -> QWidget:
@@ -300,129 +326,155 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"处理图像失败: {str(e)}")
             traceback.print_exc()
 
-    def arrange_contours(self):
-        """自动排列所有轮廓到10cm直径的圆形工作区域"""
+    def arrange_contours(self, margin_mm=1.0):
+        try:
+            from shapely.geometry import Polygon, Point
+            from shapely import affinity, prepared
+            from shapely.ops import unary_union
+            import math
+        except ImportError:
+            QMessageBox.critical(self, "缺少依赖", "请安装shapely库：pip install shapely")
+            return
+
         if not self.canvas.contours:
             return
 
-        # 画布尺寸（像素）
-        container_width = self.canvas.canvas_width_px
-        container_height = self.canvas.canvas_height_px
-        padding = 40  # 轮廓间的最小间距
+        pixels_per_cm = self.canvas.pixels_per_cm
+        container_radius_px = 5 * pixels_per_cm  # 5cm半径
+        center_x = self.canvas.canvas_width_px / 2
+        center_y = self.canvas.canvas_height_px / 2
+        margin_px = margin_mm * (pixels_per_cm / 10)  # 间距转换为像素
 
-        # 计算圆形工作区域（直径10cm，圆心在画布中心）
-        center_x = container_width / 2
-        center_y = container_height / 2
-        radius = 5 * self.canvas.pixels_per_cm  # 半径5cm转换为像素
-
-        # 计算每个轮廓的显示尺寸并存储到列表
-        contours_with_size = []
+        # 构建轮廓多边形数据
+        contours_data = []
         for contour in self.canvas.contours:
-            rect = contour.get_display_rect()
-            width = rect.width()
-            height = rect.height()
+            if not contour.nurbs_points:
+                continue
+            display_rect = contour.get_display_rect()
+            if display_rect.isNull():
+                continue
+            pts = []
+            scale = contour.scale
+            bbox = contour.bounding_box
+            for p in contour.nurbs_points:
+                x_px = display_rect.left() + (p.x() - bbox.left()) * scale
+                y_px = display_rect.top() + (p.y() - bbox.top()) * scale
+                pts.append((x_px, y_px))
+            original_poly = Polygon(pts)
+            if not original_poly.is_valid:
+                original_poly = original_poly.buffer(0)
+            poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+            if not poly_with_margin.is_valid:
+                poly_with_margin = poly_with_margin.buffer(0)
 
-            # 如果尺寸为0，使用默认尺寸
-            if width == 0 or height == 0:
-                width = height = 100
-                # 更新轮廓的缩放比例
-                contour.scale = 100 / max(contour.bounding_box.width(), contour.bounding_box.height())
-
-            contours_with_size.append({
+            contours_data.append({
                 'contour': contour,
-                'width': width + padding,
-                'height': height + padding,
-                'placed': False
+                'original_poly': original_poly,
+                'poly_with_margin': poly_with_margin,
             })
 
-        # 按面积从大到小排序
-        contours_with_size.sort(key=lambda x: x['width'] * x['height'], reverse=True)
+        # 按面积降序排列
+        contours_data.sort(key=lambda x: x['poly_with_margin'].area, reverse=True)
 
-        # 存储已放置轮廓的位置和尺寸
-        placed_rects = []
+        pages = []  # 每页为已放置轮廓列表
 
-        # 定义辅助函数：检查矩形是否完全在圆内
-        def rect_in_circle(rect, center, radius):
-            corners = [
-                rect.topLeft(),
-                rect.topRight(),
-                rect.bottomLeft(),
-                rect.bottomRight()
-            ]
-            for corner in corners:
-                dx = corner.x() - center.x()
-                dy = corner.y() - center.y()
-                if dx * dx + dy * dy > radius * radius:
+        def poly_in_circle(poly, cx, cy, radius):
+            """检查多边形是否完全在圆内"""
+            if poly.is_empty:
+                return False
+            # 快速检查包围盒
+            minx, miny, maxx, maxy = poly.bounds
+            if (maxx - cx) ** 2 + (maxy - cy) ** 2 > radius ** 2:
+                return False
+            for x, y in poly.exterior.coords:
+                if (x - cx) ** 2 + (y - cy) ** 2 > radius ** 2:
                     return False
             return True
 
-        # 遍历所有轮廓进行放置
-        for item in contours_with_size:
-            contour = item['contour']
-            width = item['width']
-            height = item['height']
+        def try_place(poly, placed_items):
+            """尝试将多边形 poly 放入当前页，返回平移向量 (dx, dy) 或 None"""
+            poly_bounds = poly.bounds
+            poly_width = poly_bounds[2] - poly_bounds[0]
+            poly_height = poly_bounds[3] - poly_bounds[1]
+            max_dim = max(poly_width, poly_height)
 
-            placed = False
+            # 合并已放置区域的禁止多边形
+            if placed_items:
+                placed_union = unary_union([item['poly_with_margin'] for item in placed_items])
+                placed_prep = prepared.prep(placed_union)
+            else:
+                placed_union = None
+                placed_prep = None
 
-            # 尝试在画布上寻找合适的位置（从左上角开始扫描）
-            for y in range(padding, container_height - int(height), 10):
-                if placed:
-                    break
-                for x in range(padding, container_width - int(width), 10):
-                    # 创建候选矩形
-                    candidate_rect = QRectF(x, y, width, height)
+            # 采样半径：步长取 max_dim/2，从0到圆半径
+            step_r = max_dim / 2
+            radii = [i * step_r for i in range(int(container_radius_px / step_r) + 1)]
 
-                    # 检查是否在圆形工作区域内
-                    if not rect_in_circle(candidate_rect, QPointF(center_x, center_y), radius):
+            for r in radii:
+                if r == 0:
+                    angles = [0.0]  # 仅尝试圆心
+                else:
+                    # 根据半径确定角度采样数，使圆周上采样间距约为 max_dim/2
+                    circumference = 2 * math.pi * r
+                    n_angles = max(1, int(circumference / (max_dim / 2)))
+                    n_angles = min(n_angles, 36)  # 上限36
+                    angles = [2 * math.pi * i / n_angles for i in range(n_angles)]
+
+                for angle in angles:
+                    x = center_x + r * math.cos(angle)
+                    y = center_y + r * math.sin(angle)
+
+                    dx = x - (poly_bounds[0] + poly_bounds[2]) / 2
+                    dy = y - (poly_bounds[1] + poly_bounds[3]) / 2
+                    candidate = affinity.translate(poly, dx, dy)
+
+                    if not poly_in_circle(candidate, center_x, center_y, container_radius_px):
                         continue
 
-                    # 检查是否与已放置的矩形重叠
-                    overlap = False
-                    for placed_rect in placed_rects:
-                        if candidate_rect.intersects(placed_rect):
-                            overlap = True
-                            break
+                    if placed_prep is not None and placed_prep.intersects(candidate):
+                        continue
 
-                    # 如果不重叠，放置轮廓
-                    if not overlap:
-                        contour.position = QPointF(x, y)
-                        placed_rects.append(candidate_rect)
-                        item['placed'] = True
-                        placed = True
-                        break
+                    return (dx, dy)
 
-            # 如果找不到合适位置，尝试将轮廓中心与圆心对齐
+            return None
+
+        # 分配每个轮廓
+        for data in contours_data:
+            placed = False
+            for page in pages:
+                vec = try_place(data['poly_with_margin'], page)
+                if vec is not None:
+                    dx, dy = vec
+                    data['original_poly'] = affinity.translate(data['original_poly'], dx, dy)
+                    data['poly_with_margin'] = affinity.translate(data['poly_with_margin'], dx, dy)
+                    data['contour'].position += QPointF(dx, dy)
+                    page.append(data)
+                    placed = True
+                    break
+
             if not placed:
-                best_x = center_x - width / 2
-                best_y = center_y - height / 2
-                # 约束到画布边界内（防止超出画布）
-                best_x = max(padding, min(best_x, container_width - width))
-                best_y = max(padding, min(best_y, container_height - height))
-                candidate_rect = QRectF(best_x, best_y, width, height)
+                # 尝试新建页面
+                vec = try_place(data['poly_with_margin'], [])
+                if vec is not None:
+                    dx, dy = vec
+                    data['original_poly'] = affinity.translate(data['original_poly'], dx, dy)
+                    data['poly_with_margin'] = affinity.translate(data['poly_with_margin'], dx, dy)
+                    data['contour'].position += QPointF(dx, dy)
+                    pages.append([data])
+                else:
+                    print(f"警告：轮廓 {data['contour'].label} 无法放置")
 
-                if rect_in_circle(candidate_rect, QPointF(center_x, center_y), radius):
-                    # 检查与已放置矩形重叠
-                    overlap = any(candidate_rect.intersects(pr) for pr in placed_rects)
-                    if not overlap:
-                        contour.position = QPointF(best_x, best_y)
-                        placed_rects.append(candidate_rect)
-                        item['placed'] = True
-                        placed = True
-
-            # 如果仍然找不到，使用最后的回退位置（圆心附近，可能超出圆，但保证在画布内）
-            if not placed:
-                x = center_x - width / 2
-                y = center_y - height / 2
-                x = max(padding, min(x, container_width - width))
-                y = max(padding, min(y, container_height - height))
-                contour.position = QPointF(x, y)
-                placed_rects.append(QRectF(x, y, width, height))
-                item['placed'] = True
-                print(f"警告：轮廓 {contour.label} 无法完全放入圆形工作区，已放置在圆心附近，可能超出边界。")
-
+        # 保存分页结果并显示第一页
+        self.pages_contours = pages
+        self.current_page = 0
+        if pages:
+            self.canvas.contours = [item['contour'] for item in pages[0]]
+            self.lbl_page.setText(f"第 1 页 / 共 {len(pages)} 页")
+        else:
+            self.canvas.contours = []
+            self.lbl_page.setText("第 0 页 / 共 0 页")
         self.canvas.update()
-        placed_count = sum(1 for item in contours_with_size if item['placed'])
-        self.statusBar().showMessage(f"已自动排列 {placed_count} 个轮廓到直径10cm圆形区域")
+        self.statusBar().showMessage(f"已自动排列到 {len(pages)} 页")
 
     def clear_contours(self):
         """清空所有轮廓"""
@@ -630,36 +682,40 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "没有轮廓数据可以保存！")
                 return
 
-            # ---------- EZCAD 格式（实际使用 DXF 内容） ----------
-            if ext == '.ezd' or (selected_filter == "EZCAD文件 (*.ezd)" and not ext):
-                if not ext:
-                    file_path += '.ezd'
-                success = DXFExporter.export_to_dxf(
-                    self.canvas.contours,
-                    self.canvas.pixels_per_cm,
-                    file_path
-                )
-                if success:
-                    self.statusBar().showMessage(f"轮廓数据已保存为EZCAD格式: {file_path}")
-                    QMessageBox.information(self, "成功", f"成功保存 {len(self.canvas.contours)} 个轮廓到EZCAD文件！")
-                else:
-                    QMessageBox.critical(self, "错误", "保存EZCAD文件失败！")
-                return
-
-            # ---------- DXF 格式 ----------
+            # DXF 格式
             if ext == '.dxf' or (selected_filter == "DXF文件 (*.dxf)" and not ext):
                 if not ext:
                     file_path += '.dxf'
                 success = DXFExporter.export_to_dxf(
                     self.canvas.contours,
                     self.canvas.pixels_per_cm,
-                    file_path
+                    file_path,
+                    label_font_size_mm=self.canvas.label_font_size_mm*0.5,
+                    label_min_size_mm=self.canvas.label_min_size_mm
                 )
                 if success:
                     self.statusBar().showMessage(f"轮廓数据已保存为DXF: {file_path}")
                     QMessageBox.information(self, "成功", f"成功保存 {len(self.canvas.contours)} 个轮廓到DXF文件！")
                 else:
                     QMessageBox.critical(self, "错误", "保存DXF文件失败！")
+                return
+
+            # EZCAD 格式（复用 DXF 逻辑）
+            if ext == '.ezd' or (selected_filter == "EZCAD文件 (*.ezd)" and not ext):
+                if not ext:
+                    file_path += '.ezd'
+                success = DXFExporter.export_to_dxf(
+                    self.canvas.contours,
+                    self.canvas.pixels_per_cm,
+                    file_path,
+                    label_font_size_mm=self.canvas.label_font_size_mm,
+                    label_min_size_mm=self.canvas.label_min_size_mm
+                )
+                if success:
+                    self.statusBar().showMessage(f"轮廓数据已保存为EZCAD格式: {file_path}")
+                    QMessageBox.information(self, "成功", f"成功保存 {len(self.canvas.contours)} 个轮廓到EZCAD文件！")
+                else:
+                    QMessageBox.critical(self, "错误", "保存EZCAD文件失败！")
                 return
 
             # ---------- JSON 格式（默认） ----------
@@ -1187,3 +1243,19 @@ class MainWindow(QMainWindow):
         with open(filepath, 'w') as f:
             f.write("0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF")
         print(f"已创建测试文件: {filepath}")
+
+    def prev_page(self):
+        """显示上一页"""
+        if self.pages_contours and self.current_page > 0:
+            self.current_page -= 1
+            self.canvas.contours = [item['contour'] for item in self.pages_contours[self.current_page]]
+            self.canvas.update()
+            self.lbl_page.setText(f"第 {self.current_page + 1} 页 / 共 {len(self.pages_contours)} 页")
+
+    def next_page(self):
+        """显示下一页"""
+        if self.pages_contours and self.current_page < len(self.pages_contours) - 1:
+            self.current_page += 1
+            self.canvas.contours = [item['contour'] for item in self.pages_contours[self.current_page]]
+            self.canvas.update()
+            self.lbl_page.setText(f"第 {self.current_page + 1} 页 / 共 {len(self.pages_contours)} 页")

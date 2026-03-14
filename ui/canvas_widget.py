@@ -34,6 +34,10 @@ class CanvasWidget(QWidget):
         self.hovered_handle_idx = -1
         self.label_to_image_mapping: Dict[int, str] = {}
 
+        # 标号设置变量
+        self.label_font_size_mm = 3.0  # 标号字体大小（毫米）
+        self.label_min_size_mm = 3.0  # 最小轮廓尺寸阈值（毫米）
+
         # 添加工具变量
         self.current_tool = "select"  # select, pan
         self.pan_start_pos = QPointF(0, 0)
@@ -251,67 +255,47 @@ class CanvasWidget(QWidget):
             print(f"绘制轮廓错误: {str(e)}")
 
     def draw_contour_label(self, painter: QPainter, contour: Contour):
-        """绘制轮廓标号（放在轮廓内部中心）"""
         try:
             painter.save()
 
-            display_rect = contour.get_display_rect()
-            if display_rect.isNull():
-                painter.restore()
-                return
-
-            # 计算轮廓宽度（毫米），小于0.5mm不标号
-            width_mm = display_rect.width() * 10 / self.pixels_per_cm
-            if width_mm < 5:
-                painter.restore()
-                return
-
-            # 标号中心点（轮廓显示矩形中心）
-            label_center = display_rect.center()
-
-            # 标号圆形直径（像素），取轮廓宽度的1/5，限制在2mm～10mm
-            diameter_px = display_rect.width() / 5
-            min_diameter_px = 2 * self.pixels_per_cm / 10  # 2mm
-            max_diameter_px = 10 * self.pixels_per_cm / 10  # 10mm
-            diameter_px = max(min_diameter_px, min(diameter_px, max_diameter_px))
-
-            # 绘制圆形背景
-            circle_rect = QRectF(
-                label_center.x() - diameter_px / 2,
-                label_center.y() - diameter_px / 2,
-                diameter_px,
-                diameter_px
+            # 获取标号位置和竖直距离
+            label_pos, dist_px = contour.get_label_position(
+                pixels_per_cm=self.pixels_per_cm,
+                font_size_mm=self.label_font_size_mm,
+                min_size_mm=self.label_min_size_mm
             )
+            if label_pos is None or dist_px <= 0:
+                painter.restore()
+                return
 
-            # 根据是否选中设置颜色
-            if contour.is_selected:
-                painter.setBrush(QBrush(QColor(0, 100, 255, 220)))
-                painter.setPen(QPen(QColor(255, 255, 255), 1))
-            else:
-                painter.setBrush(QBrush(QColor(255, 255, 255, 240)))
-                painter.setPen(QPen(QColor(0, 0, 0), 1))
-
-            painter.drawEllipse(circle_rect)
-
-            # 绘制标号文本
-            if contour.is_selected:
-                painter.setPen(QPen(QColor(255, 255, 255), 1))
-            else:
-                painter.setPen(QPen(QColor(0, 0, 0), 1))
+            # 计算字体像素大小（固定毫米转换为像素）
+            font_size_px = self.label_font_size_mm * self.pixels_per_cm / 10
+            font_size_px = max(6, min(30, font_size_px))
 
             font = painter.font()
-            font.setPointSizeF(diameter_px * 0.6)  # 字体大小约为直径的0.6倍
+            font.setPixelSize(int(font_size_px))
             font.setBold(True)
             painter.setFont(font)
 
             label_text = str(contour.label) if contour.label > 0 else ""
-            if label_text:
-                painter.drawText(circle_rect, Qt.AlignCenter, label_text)
+            if not label_text:
+                painter.restore()
+                return
+
+            fm = QFontMetrics(font)
+            text_rect = fm.boundingRect(label_text)
+            draw_rect = QRectF(
+                label_pos.x() - text_rect.width() / 2,
+                label_pos.y() - text_rect.height() / 2,
+                text_rect.width(),
+                text_rect.height()
+            )
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            painter.drawText(draw_rect, Qt.AlignCenter, label_text)
 
             painter.restore()
         except Exception as e:
             print(f"绘制标号错误: {str(e)}")
-
 
     def draw_selection_indicators(self, painter: QPainter, contour: Contour):
         """绘制选中轮廓的指示器"""
