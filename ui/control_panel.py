@@ -281,8 +281,9 @@ class ControlPanel(QWidget):
 
         btn_arrange = QPushButton("📐 自动排列轮廓")
         btn_arrange.setObjectName("btn_arrange")
-        btn_arrange.clicked.connect(self.main_window.arrange_contours)
+        btn_arrange.clicked.connect(self.main_window.rearrange_current_page)
         contour_layout.addWidget(btn_arrange)
+
 
         # 只保留保存按钮，移除加载按钮
         btn_save = QPushButton("💾 保存轮廓")

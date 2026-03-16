@@ -60,7 +60,9 @@ class MainWindow(QMainWindow):
         # 创建模拟可视化窗口（可选显示）
         self.simulation_widget = SimulationWidget()
         self.simulation_widget.simulation_completed.connect(self._on_simulation_completed)
-
+        # 添加手动输入尺寸相关变量
+        self._updating_spins = False
+        self.current_aspect_ratio = 1.0
         # 可以放在停靠窗口或独立窗口
         sim_dock = QDockWidget("切割模拟", self)
         sim_dock.setWidget(self.simulation_widget)
@@ -205,7 +207,7 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu("工具")
 
         arrange_action = QAction("自动排列轮廓", self)
-        arrange_action.triggered.connect(self.arrange_contours)
+        arrange_action.triggered.connect(self.rearrange_current_page)
         tools_menu.addAction(arrange_action)
 
         mapping_action = QAction("查看标号映射", self)
@@ -311,7 +313,7 @@ class MainWindow(QMainWindow):
             # 自动排列轮廓
             # 自动标定所有轮廓尺寸
             self.auto_calibrate_contours()
-            self.arrange_contours()
+            self.global_arrange_contours()
 
             self.statusBar().showMessage(f"已处理 {len(self.image_files)} 个图像，提取到 {contour_count} 个轮廓")
 
@@ -326,7 +328,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"处理图像失败: {str(e)}")
             traceback.print_exc()
 
-    def arrange_contours(self, margin_mm=1.0):
+    def global_arrange_contours(self, margin_mm=1.0):
         try:
             from shapely.geometry import Polygon, Point
             from shapely import affinity, prepared
@@ -476,6 +478,240 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.statusBar().showMessage(f"已自动排列到 {len(pages)} 页")
 
+    def rearrange_current_page(self, margin_mm=1.0):
+        """仅对当前页的轮廓进行极坐标重新排列，放不下的轮廓与最后一页合并重排"""
+        try:
+            from shapely.geometry import Polygon
+            from shapely import affinity, prepared
+            from shapely.ops import unary_union
+            import math
+        except ImportError:
+            QMessageBox.critical(self, "缺少依赖", "请安装shapely库：pip install shapely")
+            return
+
+        # 如果尚未分页，回退到全局排样
+        if not hasattr(self, 'pages_contours') or not self.pages_contours:
+            self.global_arrange_contours(margin_mm)
+            return
+
+        current_idx = self.current_page
+        total_pages = len(self.pages_contours)
+        if current_idx >= total_pages:
+            return
+
+        # 画布参数
+        pixels_per_cm = self.canvas.pixels_per_cm
+        container_radius_px = 5 * pixels_per_cm
+        center_x = self.canvas.canvas_width_px / 2
+        center_y = self.canvas.canvas_height_px / 2
+        margin_px = margin_mm * (pixels_per_cm / 10)
+
+        # 辅助函数：尝试在容器内放置多边形
+        def try_place(poly, placed_items):
+            """尝试将 poly 放入容器，返回 (成功标志, dx, dy, 放置后的多边形)"""
+            poly_bounds = poly.bounds
+            poly_width = poly_bounds[2] - poly_bounds[0]
+            poly_height = poly_bounds[3] - poly_bounds[1]
+            max_dim = max(poly_width, poly_height)
+
+            # 构建已放置区域的禁止多边形
+            if placed_items:
+                placed_polys = [item['poly_with_margin'] for item in placed_items]
+                placed_union = unary_union(placed_polys)
+                placed_prep = prepared.prep(placed_union)
+            else:
+                placed_prep = None
+
+            # 从圆心向外螺旋搜索
+            step_r = max_dim / 2
+            max_r = container_radius_px
+            radii = [i * step_r for i in range(int(max_r / step_r) + 1)]
+
+            for r in radii:
+                if r == 0:
+                    angles = [0.0]
+                else:
+                    circumference = 2 * math.pi * r
+                    n_angles = max(1, int(circumference / (max_dim / 2)))
+                    n_angles = min(n_angles, 36)
+                    angles = [2 * math.pi * i / n_angles for i in range(n_angles)]
+
+                for angle in angles:
+                    x = center_x + r * math.cos(angle)
+                    y = center_y + r * math.sin(angle)
+                    dx = x - (poly_bounds[0] + poly_bounds[2]) / 2
+                    dy = y - (poly_bounds[1] + poly_bounds[3]) / 2
+                    candidate = affinity.translate(poly, dx, dy)
+
+                    # 检查是否完全在圆内
+                    if candidate.is_empty:
+                        continue
+                    minx, miny, maxx, maxy = candidate.bounds
+                    if (maxx - center_x) ** 2 + (maxy - center_y) ** 2 > container_radius_px ** 2:
+                        continue
+                    out_of_circle = False
+                    for xc, yc in candidate.exterior.coords:
+                        if (xc - center_x) ** 2 + (yc - center_y) ** 2 > container_radius_px ** 2:
+                            out_of_circle = True
+                            break
+                    if out_of_circle:
+                        continue
+
+                    # 检查与已放置区域是否重叠
+                    if placed_prep is not None and placed_prep.intersects(candidate):
+                        continue
+
+                    return True, dx, dy, candidate
+
+            return False, 0, 0, None
+
+        # 辅助函数：批量放置轮廓（修改轮廓的 position 并更新多边形）
+        def place_items(items, container_placed_items):
+            """将 items 中的轮廓逐个尝试放置到容器中，返回 (成功放置的列表, 失败的列表)"""
+            placed = []
+            failed = []
+            for item in items:
+                poly = item['poly_with_margin']
+                success, dx, dy, new_poly = try_place(poly, container_placed_items + placed)
+                if success:
+                    # 更新轮廓位置
+                    item['contour'].position += QPointF(dx, dy)
+                    # 更新多边形
+                    item['original_poly'] = affinity.translate(item['original_poly'], dx, dy)
+                    item['poly_with_margin'] = new_poly
+                    placed.append(item)
+                else:
+                    failed.append(item)
+            return placed, failed
+
+        # ---------- 1. 重新计算当前页所有轮廓的实时多边形 ----------
+        current_page_data = self.pages_contours[current_idx]
+        for item in current_page_data:
+            contour = item['contour']
+            if not contour.nurbs_points:
+                continue
+            display_rect = contour.get_display_rect()
+            if display_rect.isNull():
+                continue
+            pts = []
+            scale = contour.scale
+            bbox = contour.bounding_box
+            for p in contour.nurbs_points:
+                x_px = display_rect.left() + (p.x() - bbox.left()) * scale
+                y_px = display_rect.top() + (p.y() - bbox.top()) * scale
+                pts.append((x_px, y_px))
+            original_poly = Polygon(pts)
+            if not original_poly.is_valid:
+                original_poly = original_poly.buffer(0)
+            poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+            if not poly_with_margin.is_valid:
+                poly_with_margin = poly_with_margin.buffer(0)
+            item['original_poly'] = original_poly
+            item['poly_with_margin'] = poly_with_margin
+
+        # 按面积降序排列
+        current_page_data.sort(key=lambda x: x['poly_with_margin'].area, reverse=True)
+
+        # ---------- 2. 在当前页尝试放置 ----------
+        placed_current, overflow = place_items(current_page_data, [])
+
+        # 更新当前页数据为成功放置的轮廓
+        self.pages_contours[current_idx] = placed_current
+
+        # 如果没有溢出，直接结束
+        if not overflow:
+            self.canvas.contours = [item['contour'] for item in placed_current]
+            self.canvas.update()
+            self.lbl_page.setText(f"第 {current_idx + 1} 页 / 共 {total_pages} 页")
+            self.statusBar().showMessage("当前页重排完成")
+            return
+
+        # ---------- 3. 有溢出：获取最后一页 ----------
+        last_idx = total_pages - 1
+        if last_idx == current_idx:
+            # 当前页就是最后一页，且放不下，则需要新建一页
+            new_page_data = []
+            placed_new, still_overflow = place_items(overflow, [])
+            if placed_new:
+                self.pages_contours.append(placed_new)
+            if still_overflow:
+                # 极端情况：即使新页也放不下（可能轮廓太大），强制放在圆心并警告
+                for item in still_overflow:
+                    print(f"警告：轮廓 {item['contour'].label} 尺寸过大，无法放入新页，已强制放置在圆心")
+                    poly = item['poly_with_margin']
+                    dx = center_x - (poly.bounds[0] + poly.bounds[2]) / 2
+                    dy = center_y - (poly.bounds[1] + poly.bounds[3]) / 2
+                    item['contour'].position += QPointF(dx, dy)
+                    item['original_poly'] = affinity.translate(item['original_poly'], dx, dy)
+                    item['poly_with_margin'] = affinity.translate(poly, dx, dy)
+                    placed_new.append(item)
+                self.pages_contours.append(placed_new)
+            self.canvas.contours = [item['contour'] for item in placed_current]
+            self.canvas.update()
+            self.lbl_page.setText(f"第 {current_idx + 1} 页 / 共 {len(self.pages_contours)} 页")
+            self.statusBar().showMessage(f"当前页重排完成，溢出轮廓已放入新页")
+            return
+
+        # 否则，获取最后一页的数据
+        last_page_data = self.pages_contours[last_idx]
+
+        # ---------- 4. 重新计算最后一页轮廓的实时多边形 ----------
+        for item in last_page_data:
+            contour = item['contour']
+            if not contour.nurbs_points:
+                continue
+            display_rect = contour.get_display_rect()
+            if display_rect.isNull():
+                continue
+            pts = []
+            scale = contour.scale
+            bbox = contour.bounding_box
+            for p in contour.nurbs_points:
+                x_px = display_rect.left() + (p.x() - bbox.left()) * scale
+                y_px = display_rect.top() + (p.y() - bbox.top()) * scale
+                pts.append((x_px, y_px))
+            original_poly = Polygon(pts)
+            if not original_poly.is_valid:
+                original_poly = original_poly.buffer(0)
+            poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+            if not poly_with_margin.is_valid:
+                poly_with_margin = poly_with_margin.buffer(0)
+            item['original_poly'] = original_poly
+            item['poly_with_margin'] = poly_with_margin
+
+        # ---------- 5. 将溢出轮廓与最后一页轮廓合并，重新排最后一页 ----------
+        combined = overflow + last_page_data
+        combined.sort(key=lambda x: x['poly_with_margin'].area, reverse=True)
+
+        placed_combined, still_overflow = place_items(combined, [])
+        self.pages_contours[last_idx] = placed_combined
+
+        # 如果 still_overflow 非空，说明最后一页也放不下，需要新建页面
+        while still_overflow:
+            new_page_data = []
+            placed_new, still_overflow = place_items(still_overflow, [])
+            if placed_new:
+                self.pages_contours.append(placed_new)
+            if still_overflow:
+                # 极端情况，强制放置
+                for item in still_overflow:
+                    print(f"警告：轮廓 {item['contour'].label} 尺寸过大，无法放入新页，已强制放置在圆心")
+                    poly = item['poly_with_margin']
+                    dx = center_x - (poly.bounds[0] + poly.bounds[2]) / 2
+                    dy = center_y - (poly.bounds[1] + poly.bounds[3]) / 2
+                    item['contour'].position += QPointF(dx, dy)
+                    item['original_poly'] = affinity.translate(item['original_poly'], dx, dy)
+                    item['poly_with_margin'] = affinity.translate(poly, dx, dy)
+                    placed_new.append(item)
+                self.pages_contours.append(placed_new)
+                still_overflow = []  # 强制结束
+
+        # ---------- 6. 更新画布显示当前页 ----------
+        self.canvas.contours = [item['contour'] for item in placed_current]
+        self.canvas.update()
+        self.lbl_page.setText(f"第 {current_idx + 1} 页 / 共 {len(self.pages_contours)} 页")
+        self.statusBar().showMessage(f"当前页重排完成，溢出轮廓已移至最后页处理")
+
     def clear_contours(self):
         """清空所有轮廓"""
         self.canvas.clear()
@@ -502,12 +738,10 @@ class MainWindow(QMainWindow):
     def on_contour_selected(self, contour):
         """轮廓选中事件处理"""
         if contour:
-            # 找到选择组
             selection_group = self.findChild(QGroupBox, "selection_group")
             if selection_group:
                 selection_group.setEnabled(True)
 
-            # 找到选中信息标签
             lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
             if lbl_selected_info:
                 label_info = f"标号 {contour.label}" if contour.label > 0 else "无标号"
@@ -518,14 +752,34 @@ class MainWindow(QMainWindow):
             width_cm = rect.width() / self.canvas.pixels_per_cm
             height_cm = rect.height() / self.canvas.pixels_per_cm
 
-            # 找到尺寸输入框
+            # 计算当前宽高比
+            if height_cm > 0:
+                self.current_aspect_ratio = width_cm / height_cm
+            else:
+                self.current_aspect_ratio = 1.0
+
             spin_width = self.findChild(QDoubleSpinBox, "spin_width")
             spin_height = self.findChild(QDoubleSpinBox, "spin_height")
 
-            if spin_width:
+            if spin_width and spin_height:
+                # 设置值，同时防止触发联动
+                self._updating_spins = True
                 spin_width.setValue(width_cm)
-            if spin_height:
                 spin_height.setValue(height_cm)
+                self._updating_spins = False
+
+                # 连接信号（先断开已有连接，避免重复）
+                try:
+                    spin_width.valueChanged.disconnect(self.on_spin_width_changed)
+                except TypeError:
+                    pass
+                spin_width.valueChanged.connect(self.on_spin_width_changed)
+
+                try:
+                    spin_height.valueChanged.disconnect(self.on_spin_height_changed)
+                except TypeError:
+                    pass
+                spin_height.valueChanged.connect(self.on_spin_height_changed)
         else:
             selection_group = self.findChild(QGroupBox, "selection_group")
             if selection_group:
@@ -534,6 +788,42 @@ class MainWindow(QMainWindow):
             lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
             if lbl_selected_info:
                 lbl_selected_info.setText("未选中轮廓")
+
+            # 断开信号，避免在无轮廓时误触发
+            spin_width = self.findChild(QDoubleSpinBox, "spin_width")
+            spin_height = self.findChild(QDoubleSpinBox, "spin_height")
+            if spin_width:
+                try:
+                    spin_width.valueChanged.disconnect(self.on_spin_width_changed)
+                except TypeError:
+                    pass
+            if spin_height:
+                try:
+                    spin_height.valueChanged.disconnect(self.on_spin_height_changed)
+                except TypeError:
+                    pass
+
+    def on_spin_width_changed(self, value):
+        """宽度变化时，按比例更新高度"""
+        if self._updating_spins or not self.canvas.selected_contour:
+            return
+        self._updating_spins = True
+        spin_height = self.findChild(QDoubleSpinBox, "spin_height")
+        if spin_height and self.current_aspect_ratio > 0:
+            new_height = value / self.current_aspect_ratio
+            spin_height.setValue(new_height)
+        self._updating_spins = False
+
+    def on_spin_height_changed(self, value):
+        """高度变化时，按比例更新宽度"""
+        if self._updating_spins or not self.canvas.selected_contour:
+            return
+        self._updating_spins = True
+        spin_width = self.findChild(QDoubleSpinBox, "spin_width")
+        if spin_width and self.current_aspect_ratio > 0:
+            new_width = value * self.current_aspect_ratio
+            spin_width.setValue(new_width)
+        self._updating_spins = False
 
     def apply_contour_size(self):
         """应用轮廓尺寸"""
@@ -1249,6 +1539,13 @@ class MainWindow(QMainWindow):
         if self.pages_contours and self.current_page > 0:
             self.current_page -= 1
             self.canvas.contours = [item['contour'] for item in self.pages_contours[self.current_page]]
+
+            # 清除选中轮廓
+            if self.canvas.selected_contour:
+                self.canvas.selected_contour.is_selected = False
+                self.canvas.selected_contour = None
+                self.canvas.contour_selected.emit(None)  # 通知主窗口更新 UI
+
             self.canvas.update()
             self.lbl_page.setText(f"第 {self.current_page + 1} 页 / 共 {len(self.pages_contours)} 页")
 
@@ -1257,5 +1554,12 @@ class MainWindow(QMainWindow):
         if self.pages_contours and self.current_page < len(self.pages_contours) - 1:
             self.current_page += 1
             self.canvas.contours = [item['contour'] for item in self.pages_contours[self.current_page]]
+
+            # 清除选中轮廓
+            if self.canvas.selected_contour:
+                self.canvas.selected_contour.is_selected = False
+                self.canvas.selected_contour = None
+                self.canvas.contour_selected.emit(None)
+
             self.canvas.update()
             self.lbl_page.setText(f"第 {self.current_page + 1} 页 / 共 {len(self.pages_contours)} 页")
