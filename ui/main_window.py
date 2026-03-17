@@ -13,12 +13,14 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGr
                              QCheckBox, QListWidget, QListWidgetItem, QProgressDialog,
                              QFileDialog, QMessageBox, QFormLayout, QMenuBar, QAction,
                              QProgressBar, QApplication, QProgressBar, QRadioButton, QDockWidget)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QDateTime, QPointF, QRectF, pyqtSlot, QMetaObject, Q_ARG
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QDateTime, QPointF, QRectF, pyqtSlot, QMetaObject, Q_ARG, QObject, QThread
 from PyQt5.QtGui import QPalette, QColor
 
 # 修改导入部分
 from core.image_processor import AdvancedImageProcessor, GEOMDL_AVAILABLE
 from core.dxf_exporter import DXFExporter
+from core.cloud_manager import CloudDataManager
+
 from ui.canvas_widget import CanvasWidget
 from ui.label_mapping_dialog import LabelMappingDialog
 # 在文件顶部导入部分添加
@@ -27,6 +29,34 @@ from core.marker_detector import WhiteBallMarkerDetector
 from core.laser_controller import LaserController
 import os
 from ui.simulation_widget import SimulationWidget
+
+
+class DownloadWorker(QObject):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(tuple)   # (mask_files, overlay_map)
+    error = pyqtSignal(str)
+
+    def __init__(self, cloud_manager, patient_names):
+        super().__init__()
+        self.cloud_manager = cloud_manager
+        self.patient_names = patient_names
+        self._canceled = False
+
+    def cancel(self):
+        self._canceled = True
+
+    def run(self):
+        try:
+            mask_files, overlay_map = self.cloud_manager.download_patients(
+                self.patient_names,
+                progress_callback=self.progress.emit
+            )
+            if self._canceled:
+                self.finished.emit(([], {}))
+            else:
+                self.finished.emit((mask_files, overlay_map))
+        except Exception as e:
+            self.error.emit(str(e))
 
 class MainWindow(QMainWindow):
     """主窗口"""
@@ -79,6 +109,17 @@ class MainWindow(QMainWindow):
                                 "geomdl库未安装，将使用贝塞尔曲线进行拟合。\n\n"
                                 "要使用更精确的NURBS拟合，请运行:\n"
                                 "pip install geomdl")
+
+        # 云端数据管理
+        self.cloud_manager = CloudDataManager(
+            app_id="wx727c965326d8f905",
+            app_secret="f8ee8710362411c0e8686c5aae39e5ef",
+            env_id="cloud1-4gut65zm8fa5f13d"
+        )
+        self.overlay_map = {}  # 存储 mask 文件名到 overlay 路径的映射
+
+        # 创建云端数据停靠窗口
+        self.create_cloud_dock()
 
     def exception_hook(self, exc_type, exc_value, exc_traceback):
         """异常处理钩子"""
@@ -345,30 +386,31 @@ class MainWindow(QMainWindow):
         container_radius_px = 5 * pixels_per_cm  # 5cm半径
         center_x = self.canvas.canvas_width_px / 2
         center_y = self.canvas.canvas_height_px / 2
-        margin_px = margin_mm * (pixels_per_cm / 10)  # 间距转换为像素
+        margin_px = margin_mm * (pixels_per_cm / 10)  # 间距转换为像素 每毫米的像素数
 
         # 构建轮廓多边形数据
         contours_data = []
         for contour in self.canvas.contours:
             if not contour.nurbs_points:
                 continue
-            display_rect = contour.get_display_rect()
+            display_rect = contour.get_display_rect() # 显示矩形位置
             if display_rect.isNull():
                 continue
             pts = []
-            scale = contour.scale
+            scale = contour.scale # 包围盒到显示矩形的放大比例
             bbox = contour.bounding_box
-            for p in contour.nurbs_points:
+            for p in contour.nurbs_points: #遍历轮廓上的NURBS点，并计算其在显示轮廓上的像素坐标位置
                 x_px = display_rect.left() + (p.x() - bbox.left()) * scale
                 y_px = display_rect.top() + (p.y() - bbox.top()) * scale
                 pts.append((x_px, y_px))
             original_poly = Polygon(pts)
             if not original_poly.is_valid:
-                original_poly = original_poly.buffer(0)
-            poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+                original_poly = original_poly.buffer(0) #修复无效多边形
+            poly_with_margin = original_poly.buffer(margin_px, join_style=2) #带间距的多边形，用于碰撞检测，margin
             if not poly_with_margin.is_valid:
                 poly_with_margin = poly_with_margin.buffer(0)
 
+            # 将轮廓对象、原始多边形和带间距的多边形作为一个字典存入contours_data列表
             contours_data.append({
                 'contour': contour,
                 'original_poly': original_poly,
@@ -1059,13 +1101,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"保存文件失败: {str(e)}")
 
     def auto_calibrate_contours(self):
-        """自动标定轮廓尺寸"""
+        """自动标定轮廓尺寸（优先使用 overlay_map）"""
         try:
             if not self.canvas.contours:
                 QMessageBox.warning(self, "警告", "没有轮廓可以标定，请先处理图像！")
                 return
 
-            # 查找原始图片文件夹（假设在mask文件夹的同级overlays文件夹）
+            # 如果存在 overlay_map，使用映射标定
+            if hasattr(self, 'overlay_map') and self.overlay_map:
+                self._calibrate_with_map()
+                return
+
+            # 原有逻辑（基于本地文件结构）
             if not self.current_overlay_dir and self.image_files:
                 mask_dir = Path(self.image_files[0]).parent
                 overlay_dir = mask_dir.parent / "overlays"
@@ -1075,23 +1122,19 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "警告", "找不到原始图片文件夹（overlays）！")
                     return
 
-            # 创建进度对话框
+            # 创建检测器
+            detector = WhiteBallMarkerDetector(ball_diameter_mm=10)
             progress = QProgressDialog("自动标定中...", "取消", 0, len(self.canvas.contours), self)
             progress.setWindowTitle("自动标定")
             progress.setWindowModality(Qt.WindowModal)
             progress.show()
 
-            # 创建检测器
-            detector = WhiteBallMarkerDetector(ball_diameter_mm=10)
-
-            # 遍历所有轮廓，按来源图像分组处理
             images_processed = {}
             success_count = 0
 
             for i, contour in enumerate(self.canvas.contours):
                 progress.setValue(i)
                 QApplication.processEvents()
-
                 if progress.wasCanceled():
                     break
 
@@ -1099,17 +1142,14 @@ class MainWindow(QMainWindow):
                 if not source_image or source_image in images_processed:
                     continue
 
-                # 从掩膜文件名构建原始图片文件名
+                # 构建原始图片文件名
                 if '_mask' in source_image:
                     overlay_filename = source_image.replace('_mask', '_overlay')
                 else:
-                    # 尝试直接添加 _overlay 后缀
                     base_name = Path(source_image).stem
                     overlay_filename = f"{base_name}_overlay.png"
 
-                # 查找原始图片文件
                 overlay_path = Path(self.current_overlay_dir) / overlay_filename
-
                 if not overlay_path.exists():
                     # 尝试其他扩展名
                     for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
@@ -1121,62 +1161,34 @@ class MainWindow(QMainWindow):
                 if not overlay_path.exists():
                     continue
 
-                # 处理原始图片获取比例尺
                 result = detector.process_single_image(str(overlay_path), None)
-
                 if result and result['detected'] and result['pixel_scale']:
-                    pixel_scale = result['pixel_scale']  # mm/px
+                    pixel_scale = result['pixel_scale']
                     images_processed[source_image] = pixel_scale
                     success_count += 1
 
             progress.close()
 
-            # 应用比例尺到轮廓
-            if images_processed:
-                applied_count = 0
+            # 应用比例尺
+            applied_count = 0
+            for contour in self.canvas.contours:
+                if contour.source_image in images_processed:
+                    pixel_scale = images_processed[contour.source_image]
+                    orig_w = contour.bounding_box.width()
+                    orig_h = contour.bounding_box.height()
+                    if orig_w > 0 and orig_h > 0:
+                        w_mm = orig_w * pixel_scale
+                        h_mm = orig_h * pixel_scale
+                        contour.set_size(w_mm / 10, h_mm / 10, self.canvas.pixels_per_cm, pixel_scale)
+                        applied_count += 1
 
-                for contour in self.canvas.contours:
-                    source_image = contour.source_image
-                    if source_image in images_processed:
-                        pixel_scale = images_processed[source_image]
+            self.canvas.update()
+            self.statusBar().showMessage(f"已自动标定 {applied_count} 个轮廓")
+            if self.canvas.selected_contour:
+                self.on_contour_selected(self.canvas.selected_contour)
 
-                        # 获取轮廓的原始像素尺寸
-                        original_width_px = contour.bounding_box.width()
-                        original_height_px = contour.bounding_box.height()
-
-                        if original_width_px > 0 and original_height_px > 0:
-                            # 计算实际尺寸（毫米）
-                            actual_width_mm = original_width_px * pixel_scale
-                            actual_height_mm = original_height_px * pixel_scale
-
-                            # 转换为厘米
-                            actual_width_cm = actual_width_mm / 10
-                            actual_height_cm = actual_height_mm / 10
-
-                            # 应用尺寸到轮廓
-                            # contour.set_size(actual_width_cm, actual_height_cm, self.canvas.pixels_per_cm)
-                            contour.set_size(actual_width_cm, actual_height_cm, self.canvas.pixels_per_cm, pixel_scale)
-                            applied_count += 1
-
-                self.canvas.update()
-                self.statusBar().showMessage(f"已自动标定 {applied_count} 个轮廓")
-
-                # 更新选中的轮廓显示
-                if self.canvas.selected_contour:
-                    self.on_contour_selected(self.canvas.selected_contour)
-
-                QMessageBox.information(self, "成功",
-                                        f"自动标定完成！\n"
-                                        f"成功处理 {success_count} 个原始图像\n"
-                                        f"应用比例尺到 {applied_count} 个轮廓")
-            else:
-                QMessageBox.warning(self, "警告",
-                                    "无法完成自动标定！\n"
-                                    "请检查：\n"
-                                    "1. overlays文件夹是否存在\n"
-                                    "2. 原始图片命名是否正确（xxx_overlay.png）\n"
-                                    "3. 图片中是否包含白色小球标志物")
-
+            if applied_count == 0:
+                QMessageBox.warning(self, "警告", "自动标定未成功，请检查overlay文件或手动标定。")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"自动标定失败: {str(e)}")
             traceback.print_exc()
@@ -1266,6 +1278,43 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"标定失败: {str(e)}")
             traceback.print_exc()
+
+    def _calibrate_with_map(self):
+        """使用 overlay_map 进行标定"""
+        detector = WhiteBallMarkerDetector(ball_diameter_mm=10)
+        progress = QProgressDialog("自动标定中...", "取消", 0, len(self.canvas.contours), self)
+        progress.setWindowTitle("自动标定")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+
+        applied_count = 0
+        for i, contour in enumerate(self.canvas.contours):
+            progress.setValue(i)
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+
+            source_image = contour.source_image
+            if source_image not in self.overlay_map:
+                continue
+
+            overlay_path = self.overlay_map[source_image]
+            result = detector.process_single_image(overlay_path, None)
+            if result and result['detected'] and result['pixel_scale']:
+                pixel_scale = result['pixel_scale']
+                orig_w = contour.bounding_box.width()
+                orig_h = contour.bounding_box.height()
+                if orig_w > 0 and orig_h > 0:
+                    w_mm = orig_w * pixel_scale
+                    h_mm = orig_h * pixel_scale
+                    contour.set_size(w_mm / 10, h_mm / 10, self.canvas.pixels_per_cm, pixel_scale)
+                    applied_count += 1
+
+        progress.close()
+        self.canvas.update()
+        self.statusBar().showMessage(f"已自动标定 {applied_count} 个轮廓")
+        if self.canvas.selected_contour:
+            self.on_contour_selected(self.canvas.selected_contour)
 
     def set_tool(self, tool_name):
         """设置当前工具"""
@@ -1563,3 +1612,97 @@ class MainWindow(QMainWindow):
 
             self.canvas.update()
             self.lbl_page.setText(f"第 {self.current_page + 1} 页 / 共 {len(self.pages_contours)} 页")
+
+    def create_cloud_dock(self):
+        """创建云端数据停靠面板"""
+        from PyQt5.QtWidgets import QDockWidget, QAbstractItemView
+
+        dock = QDockWidget("云端数据", self)
+        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        self.btn_refresh = QPushButton("刷新患者列表")
+        self.btn_refresh.clicked.connect(self.on_refresh_patient_list)
+        self.btn_download = QPushButton("下载并处理选中患者")
+        self.btn_download.clicked.connect(self.on_download_selected)
+        btn_layout.addWidget(self.btn_refresh)
+        btn_layout.addWidget(self.btn_download)
+        layout.addLayout(btn_layout)
+
+        # 患者列表（多选）
+        self.patient_list = QListWidget()
+        self.patient_list.setSelectionMode(QAbstractItemView.MultiSelection)
+        layout.addWidget(self.patient_list)
+
+        # 状态标签
+        self.lbl_cloud_status = QLabel("就绪")
+        layout.addWidget(self.lbl_cloud_status)
+
+        dock.setWidget(widget)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+    def on_refresh_patient_list(self):
+        """刷新患者列表"""
+        self.lbl_cloud_status.setText("正在获取患者列表...")
+        QApplication.processEvents()
+        try:
+            patients = self.cloud_manager.fetch_patient_names()
+            self.patient_list.clear()
+            self.patient_list.addItems(patients)
+            self.lbl_cloud_status.setText(f"获取到 {len(patients)} 个患者")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"获取患者列表失败: {str(e)}")
+            self.lbl_cloud_status.setText("获取失败")
+
+    def on_download_selected(self):
+        """下载选中患者并处理"""
+        selected_items = self.patient_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "警告", "请至少选择一个患者")
+            return
+        patient_names = [item.text() for item in selected_items]
+
+        reply = QMessageBox.question(self, "确认", f"确定下载并处理选中的 {len(patient_names)} 个患者吗？",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        # 启动下载线程
+        self.download_thread = QThread()
+        self.download_worker = DownloadWorker(self.cloud_manager, patient_names)
+        self.download_worker.moveToThread(self.download_thread)
+
+        self.download_worker.progress.connect(self.on_download_progress)
+        self.download_worker.finished.connect(self.on_download_finished)
+        self.download_worker.error.connect(self.on_download_error)
+        self.download_thread.started.connect(self.download_worker.run)
+        self.download_thread.finished.connect(self.download_thread.deleteLater)
+
+        self.progress_dialog = QProgressDialog("正在下载患者数据...", "取消", 0, 100, self)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.canceled.connect(self.download_worker.cancel)
+
+        self.download_thread.start()
+        self.progress_dialog.show()
+
+    def on_download_progress(self, msg):
+        self.progress_dialog.setLabelText(msg)
+
+    def on_download_finished(self, result):
+        self.progress_dialog.close()
+        mask_files, overlay_map = result
+        if not mask_files:
+            QMessageBox.information(self, "提示", "没有下载到任何mask文件")
+            return
+
+        self.overlay_map = overlay_map
+        self.image_files = mask_files
+        self.process_all_images()  # 调用现有处理函数
+
+    def on_download_error(self, err_msg):
+        self.progress_dialog.close()
+        QMessageBox.critical(self, "下载错误", err_msg)
