@@ -112,9 +112,9 @@ class MainWindow(QMainWindow):
 
         # 云端数据管理
         self.cloud_manager = CloudDataManager(
-            app_id="wx727c965326d8f905",
-            app_secret="f8ee8710362411c0e8686c5aae39e5ef",
-            env_id="cloud1-4gut65zm8fa5f13d"
+            app_id="XXXXXXXXXXX",                                    # 填入你的appid
+            app_secret="XXXXXXXXXXXXXXXXXXXXXX",                     # 填入你的app_secert
+            env_id="XXXXXXXXXXXXXXXXXXXXXXXX"                        # 填入你的env_id
         )
         self.overlay_map = {}  # 存储 mask 文件名到 overlay 路径的映射
 
