@@ -71,10 +71,13 @@ class MainWindow(QMainWindow):
         self.image_files = []
         self.label_to_image_map: Dict[int, str] = {}  # 添加：标号到图像名称的映射
         self.next_label = 1  # 添加：下一个标号
-        self.current_precision = 0.5  # 当前拟合精度
-        self.refit_timer = QTimer()  # 用于延迟重新拟合的定时器
-        self.refit_timer.setSingleShot(True)
-        self.refit_timer.timeout.connect(self.on_refit_timeout)
+        # self.current_precision = 0.5  # 当前拟合精度
+        # self.refit_timer = QTimer()  # 用于延迟重新拟合的定时器
+        # self.refit_timer.setSingleShot(True)
+        # self.refit_timer.timeout.connect(self.on_refit_timeout)
+        self.control_points_timer = QTimer()
+        self.control_points_timer.setSingleShot(True)
+        self.control_points_timer.timeout.connect(self.on_control_points_timeout)
         # 添加像素比例尺相关变量
         self.pixel_scale_mm_per_px = None
         self.current_overlay_dir = ""
@@ -112,9 +115,9 @@ class MainWindow(QMainWindow):
 
         # 云端数据管理
         self.cloud_manager = CloudDataManager(
-            app_id="XXXXXXXXXXX",                                    # 填入你的appid
-            app_secret="XXXXXXXXXXXXXXXXXXXXXX",                     # 填入你的app_secert
-            env_id="XXXXXXXXXXXXXXXXXXXXXXXX"                        # 填入你的env_id
+            app_id="wx727c965326d8f905",
+            app_secret="f8ee8710362411c0e8686c5aae39e5ef",
+            env_id="cloud1-4gut65zm8fa5f13d"
         )
         self.overlay_map = {}  # 存储 mask 文件名到 overlay 路径的映射
 
@@ -327,10 +330,13 @@ class MainWindow(QMainWindow):
                         # 简化轮廓 - 使用 NURBSFitter 中的方法
                         simplified_points = AdvancedImageProcessor.simplify_contour(contour_points, tolerance=2.0)
 
-                        # 使用NURBS曲线拟合 - 使用 NURBSFitter 中的方法
+                        # 定义默认控制点数量（可根据需要调整）
+                        DEFAULT_CONTROL_POINTS = 120
+
+                        # 使用默认控制点数量拟合
                         nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
                             simplified_points,
-                            self.current_precision
+                            num_control_points=DEFAULT_CONTROL_POINTS  # 直接指定控制点数量
                         )
 
                         # 检查是否为该图像分配了标号
@@ -339,7 +345,10 @@ class MainWindow(QMainWindow):
                             self.canvas.label_to_image_mapping[self.next_label] = image_name
 
                         # 创建轮廓对象
-                        contour = self.canvas.add_contour(simplified_points, image_name, self.next_label)
+                        contour = self.canvas.add_contour(
+                            simplified_points, image_name, self.next_label,
+                            control_points=DEFAULT_CONTROL_POINTS
+                        )
 
                         contour_count += 1
 
@@ -370,6 +379,7 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def global_arrange_contours(self, margin_mm=1.0):
+        """自动排列所有轮廓到画布页面（极坐标排样）"""
         try:
             from shapely.geometry import Polygon, Point
             from shapely import affinity, prepared
@@ -379,146 +389,174 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "缺少依赖", "请安装shapely库：pip install shapely")
             return
 
-        if not self.canvas.contours:
-            return
+        # 创建进度提示对话框
+        progress = QProgressDialog("正在自动排样，请稍候...", None, 0, 0, self)
+        progress.setWindowTitle("自动排样")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)  # 立即显示
+        progress.show()
+        QApplication.processEvents()  # 确保对话框显示
 
-        pixels_per_cm = self.canvas.pixels_per_cm
-        container_radius_px = 5 * pixels_per_cm  # 5cm半径
-        center_x = self.canvas.canvas_width_px / 2
-        center_y = self.canvas.canvas_height_px / 2
-        margin_px = margin_mm * (pixels_per_cm / 10)  # 间距转换为像素 每毫米的像素数
+        try:
+            if not self.canvas.contours:
+                progress.close()
+                return
 
-        # 构建轮廓多边形数据
-        contours_data = []
-        for contour in self.canvas.contours:
-            if not contour.nurbs_points:
-                continue
-            display_rect = contour.get_display_rect() # 显示矩形位置
-            if display_rect.isNull():
-                continue
-            pts = []
-            scale = contour.scale # 包围盒到显示矩形的放大比例
-            bbox = contour.bounding_box
-            for p in contour.nurbs_points: #遍历轮廓上的NURBS点，并计算其在显示轮廓上的像素坐标位置
-                x_px = display_rect.left() + (p.x() - bbox.left()) * scale
-                y_px = display_rect.top() + (p.y() - bbox.top()) * scale
-                pts.append((x_px, y_px))
-            original_poly = Polygon(pts)
-            if not original_poly.is_valid:
-                original_poly = original_poly.buffer(0) #修复无效多边形
-            poly_with_margin = original_poly.buffer(margin_px, join_style=2) #带间距的多边形，用于碰撞检测，margin
-            if not poly_with_margin.is_valid:
-                poly_with_margin = poly_with_margin.buffer(0)
+            pixels_per_cm = self.canvas.pixels_per_cm
+            container_radius_px = 5 * pixels_per_cm  # 5cm半径
+            center_x = self.canvas.canvas_width_px / 2
+            center_y = self.canvas.canvas_height_px / 2
+            margin_px = margin_mm * (pixels_per_cm / 10)  # 间距转换为像素
 
-            # 将轮廓对象、原始多边形和带间距的多边形作为一个字典存入contours_data列表
-            contours_data.append({
-                'contour': contour,
-                'original_poly': original_poly,
-                'poly_with_margin': poly_with_margin,
-            })
+            # 构建轮廓多边形数据
+            contours_data = []
+            total = len(self.canvas.contours)
+            for idx, contour in enumerate(self.canvas.contours):
+                # 定期处理事件，保持界面响应
+                if idx % 10 == 0:
+                    QApplication.processEvents()
 
-        # 按面积降序排列
-        contours_data.sort(key=lambda x: x['poly_with_margin'].area, reverse=True)
+                if not contour.nurbs_points:
+                    continue
+                display_rect = contour.get_display_rect()
+                if display_rect.isNull():
+                    continue
+                pts = []
+                scale = contour.scale
+                bbox = contour.bounding_box
+                for p in contour.nurbs_points:
+                    x_px = display_rect.left() + (p.x() - bbox.left()) * scale
+                    y_px = display_rect.top() + (p.y() - bbox.top()) * scale
+                    pts.append((x_px, y_px))
+                original_poly = Polygon(pts)
+                if not original_poly.is_valid:
+                    original_poly = original_poly.buffer(0)
+                    # 如果变为 MultiPolygon，取面积最大的
+                    if original_poly.geom_type == 'MultiPolygon':
+                        original_poly = max(original_poly.geoms, key=lambda p: p.area)
+                poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+                if not poly_with_margin.is_valid:
+                    poly_with_margin = poly_with_margin.buffer(0)
+                    if poly_with_margin.geom_type == 'MultiPolygon':
+                        poly_with_margin = max(poly_with_margin.geoms, key=lambda p: p.area)
 
-        pages = []  # 每页为已放置轮廓列表
+                contours_data.append({
+                    'contour': contour,
+                    'original_poly': original_poly,
+                    'poly_with_margin': poly_with_margin,
+                })
 
-        def poly_in_circle(poly, cx, cy, radius):
-            """检查多边形是否完全在圆内"""
-            if poly.is_empty:
-                return False
-            # 快速检查包围盒
-            minx, miny, maxx, maxy = poly.bounds
-            if (maxx - cx) ** 2 + (maxy - cy) ** 2 > radius ** 2:
-                return False
-            for x, y in poly.exterior.coords:
-                if (x - cx) ** 2 + (y - cy) ** 2 > radius ** 2:
+            # 按面积降序排列
+            contours_data.sort(key=lambda x: x['poly_with_margin'].area, reverse=True)
+
+            pages = []  # 每页为已放置轮廓列表
+
+            def poly_in_circle(poly, cx, cy, radius):
+                """检查多边形是否完全在圆内"""
+                if poly.is_empty:
                     return False
-            return True
+                # 快速检查包围盒
+                minx, miny, maxx, maxy = poly.bounds
+                if (maxx - cx) ** 2 + (maxy - cy) ** 2 > radius ** 2:
+                    return False
+                for x, y in poly.exterior.coords:
+                    if (x - cx) ** 2 + (y - cy) ** 2 > radius ** 2:
+                        return False
+                return True
 
-        def try_place(poly, placed_items):
-            """尝试将多边形 poly 放入当前页，返回平移向量 (dx, dy) 或 None"""
-            poly_bounds = poly.bounds
-            poly_width = poly_bounds[2] - poly_bounds[0]
-            poly_height = poly_bounds[3] - poly_bounds[1]
-            max_dim = max(poly_width, poly_height)
+            def try_place(poly, placed_items):
+                """尝试将多边形 poly 放入当前页，返回平移向量 (dx, dy) 或 None"""
+                poly_bounds = poly.bounds
+                poly_width = poly_bounds[2] - poly_bounds[0]
+                poly_height = poly_bounds[3] - poly_bounds[1]
+                max_dim = max(poly_width, poly_height)
 
-            # 合并已放置区域的禁止多边形
-            if placed_items:
-                placed_union = unary_union([item['poly_with_margin'] for item in placed_items])
-                placed_prep = prepared.prep(placed_union)
+                # 合并已放置区域的禁止多边形
+                if placed_items:
+                    placed_union = unary_union([item['poly_with_margin'] for item in placed_items])
+                    placed_prep = prepared.prep(placed_union)
+                else:
+                    placed_union = None
+                    placed_prep = None
+
+                # 采样半径：步长取 max_dim/2，从0到圆半径
+                step_r = max_dim / 2
+                radii = [i * step_r for i in range(int(container_radius_px / step_r) + 1)]
+
+                for r in radii:
+                    if r == 0:
+                        angles = [0.0]  # 仅尝试圆心
+                    else:
+                        # 根据半径确定角度采样数，使圆周上采样间距约为 max_dim/2
+                        circumference = 2 * math.pi * r
+                        n_angles = max(1, int(circumference / (max_dim / 2)))
+                        n_angles = min(n_angles, 36)  # 上限36
+                        angles = [2 * math.pi * i / n_angles for i in range(n_angles)]
+
+                    for angle in angles:
+                        x = center_x + r * math.cos(angle)
+                        y = center_y + r * math.sin(angle)
+
+                        dx = x - (poly_bounds[0] + poly_bounds[2]) / 2
+                        dy = y - (poly_bounds[1] + poly_bounds[3]) / 2
+                        candidate = affinity.translate(poly, dx, dy)
+
+                        if not poly_in_circle(candidate, center_x, center_y, container_radius_px):
+                            continue
+
+                        if placed_prep is not None and placed_prep.intersects(candidate):
+                            continue
+
+                        return (dx, dy)
+
+                return None
+
+            # 分配每个轮廓
+            total_contours = len(contours_data)
+            for i, data in enumerate(contours_data):
+                # 定期处理事件
+                if i % 10 == 0:
+                    QApplication.processEvents()
+
+                placed = False
+                for page in pages:
+                    vec = try_place(data['poly_with_margin'], page)
+                    if vec is not None:
+                        dx, dy = vec
+                        data['original_poly'] = affinity.translate(data['original_poly'], dx, dy)
+                        data['poly_with_margin'] = affinity.translate(data['poly_with_margin'], dx, dy)
+                        data['contour'].position += QPointF(dx, dy)
+                        page.append(data)
+                        placed = True
+                        break
+
+                if not placed:
+                    # 尝试新建页面
+                    vec = try_place(data['poly_with_margin'], [])
+                    if vec is not None:
+                        dx, dy = vec
+                        data['original_poly'] = affinity.translate(data['original_poly'], dx, dy)
+                        data['poly_with_margin'] = affinity.translate(data['poly_with_margin'], dx, dy)
+                        data['contour'].position += QPointF(dx, dy)
+                        pages.append([data])
+                    else:
+                        print(f"警告：轮廓 {data['contour'].label} 无法放置")
+
+            # 保存分页结果并显示第一页
+            self.pages_contours = pages
+            self.current_page = 0
+            if pages:
+                self.canvas.contours = [item['contour'] for item in pages[0]]
+                self.lbl_page.setText(f"第 1 页 / 共 {len(pages)} 页")
             else:
-                placed_union = None
-                placed_prep = None
+                self.canvas.contours = []
+                self.lbl_page.setText("第 0 页 / 共 0 页")
+            self.canvas.update()
+            self.statusBar().showMessage(f"已自动排列到 {len(pages)} 页")
 
-            # 采样半径：步长取 max_dim/2，从0到圆半径
-            step_r = max_dim / 2
-            radii = [i * step_r for i in range(int(container_radius_px / step_r) + 1)]
-
-            for r in radii:
-                if r == 0:
-                    angles = [0.0]  # 仅尝试圆心
-                else:
-                    # 根据半径确定角度采样数，使圆周上采样间距约为 max_dim/2
-                    circumference = 2 * math.pi * r
-                    n_angles = max(1, int(circumference / (max_dim / 2)))
-                    n_angles = min(n_angles, 36)  # 上限36
-                    angles = [2 * math.pi * i / n_angles for i in range(n_angles)]
-
-                for angle in angles:
-                    x = center_x + r * math.cos(angle)
-                    y = center_y + r * math.sin(angle)
-
-                    dx = x - (poly_bounds[0] + poly_bounds[2]) / 2
-                    dy = y - (poly_bounds[1] + poly_bounds[3]) / 2
-                    candidate = affinity.translate(poly, dx, dy)
-
-                    if not poly_in_circle(candidate, center_x, center_y, container_radius_px):
-                        continue
-
-                    if placed_prep is not None and placed_prep.intersects(candidate):
-                        continue
-
-                    return (dx, dy)
-
-            return None
-
-        # 分配每个轮廓
-        for data in contours_data:
-            placed = False
-            for page in pages:
-                vec = try_place(data['poly_with_margin'], page)
-                if vec is not None:
-                    dx, dy = vec
-                    data['original_poly'] = affinity.translate(data['original_poly'], dx, dy)
-                    data['poly_with_margin'] = affinity.translate(data['poly_with_margin'], dx, dy)
-                    data['contour'].position += QPointF(dx, dy)
-                    page.append(data)
-                    placed = True
-                    break
-
-            if not placed:
-                # 尝试新建页面
-                vec = try_place(data['poly_with_margin'], [])
-                if vec is not None:
-                    dx, dy = vec
-                    data['original_poly'] = affinity.translate(data['original_poly'], dx, dy)
-                    data['poly_with_margin'] = affinity.translate(data['poly_with_margin'], dx, dy)
-                    data['contour'].position += QPointF(dx, dy)
-                    pages.append([data])
-                else:
-                    print(f"警告：轮廓 {data['contour'].label} 无法放置")
-
-        # 保存分页结果并显示第一页
-        self.pages_contours = pages
-        self.current_page = 0
-        if pages:
-            self.canvas.contours = [item['contour'] for item in pages[0]]
-            self.lbl_page.setText(f"第 1 页 / 共 {len(pages)} 页")
-        else:
-            self.canvas.contours = []
-            self.lbl_page.setText("第 0 页 / 共 0 页")
-        self.canvas.update()
-        self.statusBar().showMessage(f"已自动排列到 {len(pages)} 页")
+        finally:
+            # 无论成功或异常，关闭进度对话框
+            progress.close()
 
     def rearrange_current_page(self, margin_mm=1.0):
         """仅对当前页的轮廓进行极坐标重新排列，放不下的轮廓与最后一页合并重排"""
@@ -779,12 +817,19 @@ class MainWindow(QMainWindow):
 
     def on_contour_selected(self, contour):
         """轮廓选中事件处理"""
+        # 获取控件引用
+        selection_group = self.findChild(QGroupBox, "selection_group")
+        lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
+        spin_width = self.findChild(QDoubleSpinBox, "spin_width")
+        spin_height = self.findChild(QDoubleSpinBox, "spin_height")
+        slider_cp = self.findChild(QSlider, "slider_control_points")
+        spin_cp = self.findChild(QSpinBox, "spin_control_points")
+        lbl_cp = self.findChild(QLabel, "lbl_control_points")
+
         if contour:
-            selection_group = self.findChild(QGroupBox, "selection_group")
+            # 选中状态
             if selection_group:
                 selection_group.setEnabled(True)
-
-            lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
             if lbl_selected_info:
                 label_info = f"标号 {contour.label}" if contour.label > 0 else "无标号"
                 lbl_selected_info.setText(f"{label_info} - 轮廓 {contour.id} ({contour.source_image})")
@@ -793,57 +838,45 @@ class MainWindow(QMainWindow):
             rect = contour.get_display_rect()
             width_cm = rect.width() / self.canvas.pixels_per_cm
             height_cm = rect.height() / self.canvas.pixels_per_cm
-
-            # 计算当前宽高比
-            if height_cm > 0:
-                self.current_aspect_ratio = width_cm / height_cm
-            else:
-                self.current_aspect_ratio = 1.0
-
-            spin_width = self.findChild(QDoubleSpinBox, "spin_width")
-            spin_height = self.findChild(QDoubleSpinBox, "spin_height")
-
             if spin_width and spin_height:
-                # 设置值，同时防止触发联动
                 self._updating_spins = True
                 spin_width.setValue(width_cm)
                 spin_height.setValue(height_cm)
                 self._updating_spins = False
 
-                # 连接信号（先断开已有连接，避免重复）
-                try:
-                    spin_width.valueChanged.disconnect(self.on_spin_width_changed)
-                except TypeError:
-                    pass
-                spin_width.valueChanged.connect(self.on_spin_width_changed)
+            # 更新控制点数量显示
+            num_points = getattr(contour, 'control_points', 120)  # 默认120
+            # 限制到滑块范围 10-200（确保不超出）
+            num_points = max(10, min(500, num_points))
+            # 如果轮廓的 control_points 与限制后的值不同，更新轮廓属性（可选）
+            if num_points != getattr(contour, 'control_points', None):
+                contour.control_points = num_points
 
-                try:
-                    spin_height.valueChanged.disconnect(self.on_spin_height_changed)
-                except TypeError:
-                    pass
-                spin_height.valueChanged.connect(self.on_spin_height_changed)
+            if slider_cp and spin_cp:
+                slider_cp.blockSignals(True)
+                spin_cp.blockSignals(True)
+                slider_cp.setValue(num_points)
+                spin_cp.setValue(num_points)
+                slider_cp.setEnabled(True)  # 启用滑块
+                spin_cp.setEnabled(True)  # 启用数值框
+                slider_cp.blockSignals(False)
+                spin_cp.blockSignals(False)
+            if lbl_cp:
+                lbl_cp.setText(f"{num_points} 个点")
+                lbl_cp.setEnabled(True)
         else:
-            selection_group = self.findChild(QGroupBox, "selection_group")
+            # 未选中状态
             if selection_group:
                 selection_group.setEnabled(False)
-
-            lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
             if lbl_selected_info:
                 lbl_selected_info.setText("未选中轮廓")
-
-            # 断开信号，避免在无轮廓时误触发
-            spin_width = self.findChild(QDoubleSpinBox, "spin_width")
-            spin_height = self.findChild(QDoubleSpinBox, "spin_height")
-            if spin_width:
-                try:
-                    spin_width.valueChanged.disconnect(self.on_spin_width_changed)
-                except TypeError:
-                    pass
-            if spin_height:
-                try:
-                    spin_height.valueChanged.disconnect(self.on_spin_height_changed)
-                except TypeError:
-                    pass
+            # 禁用控制点控件
+            if slider_cp:
+                slider_cp.setEnabled(False)
+            if spin_cp:
+                spin_cp.setEnabled(False)
+            if lbl_cp:
+                lbl_cp.setEnabled(False)
 
     def on_spin_width_changed(self, value):
         """宽度变化时，按比例更新高度"""
@@ -935,35 +968,85 @@ class MainWindow(QMainWindow):
         dialog = LabelMappingDialog(self.label_to_image_map, self)
         dialog.exec_()
 
-    def on_precision_changed(self, value):
-        """精度滑块值改变事件"""
-        # 更新精度值显示
-        precision_percent = value
-        lbl_precision_value = self.findChild(QLabel, "lbl_precision_value")
-        if lbl_precision_value:
-            # 将50-150映射到50%-150%显示
-            display_percent = precision_percent
-            lbl_precision_value.setText(f"{display_percent}%")
+    # def on_precision_changed(self, value):
+    #     """精度滑块值改变事件"""
+    #     # 更新精度值显示
+    #     precision_percent = value
+    #     lbl_precision_value = self.findChild(QLabel, "lbl_precision_value")
+    #     if lbl_precision_value:
+    #         # 将50-150映射到50%-150%显示
+    #         display_percent = precision_percent
+    #         lbl_precision_value.setText(f"{display_percent}%")
+    #
+    #     # 计算精度值 (0.5-1.5)
+    #     # 将滑块值50-150映射到0.5-1.5
+    #     new_precision = 0.5 + (precision_percent - 50) * 0.01
+    #     # 限制在0.5-1.5范围内（理论上不会超出，但为了安全）
+    #     new_precision = max(0.5, min(2, new_precision))
+    #
+    #     # 只有当精度变化足够大时才重新拟合
+    #     if abs(new_precision - self.current_precision) > 0.005:
+    #         self.current_precision = new_precision
+    #
+    #         # 启动定时器进行延迟重新拟合
+    #         self.refit_timer.start(200)  # 200毫秒后重新拟合
+    #         self.statusBar().showMessage(f"正在调整拟合精度到 {precision_percent}%...")
+    #
+    # def on_refit_timeout(self):
+    #     """定时器超时，重新拟合所有轮廓"""
+    #     if self.canvas.contours:
+    #         self.canvas.refit_all_contours(self.current_precision)
+    #         self.statusBar().showMessage(f"已重新拟合所有轮廓 (精度: {int(self.current_precision * 100)}%)")
 
-        # 计算精度值 (0.5-1.5)
-        # 将滑块值50-150映射到0.5-1.5
-        new_precision = 0.5 + (precision_percent - 50) * 0.01
-        # 限制在0.5-1.5范围内（理论上不会超出，但为了安全）
-        new_precision = max(0.5, min(2, new_precision))
+    def on_control_points_changed(self, value):
+        # 更新数值框显示
+        spin = self.findChild(QSpinBox, "spin_control_points")
+        if spin:
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
 
-        # 只有当精度变化足够大时才重新拟合
-        if abs(new_precision - self.current_precision) > 0.005:
-            self.current_precision = new_precision
+        # 更新标签显示
+        lbl = self.findChild(QLabel, "lbl_control_points")
+        if lbl:
+            lbl.setText(f"{value} 个点")
 
-            # 启动定时器进行延迟重新拟合
-            self.refit_timer.start(200)  # 200毫秒后重新拟合
-            self.statusBar().showMessage(f"正在调整拟合精度到 {precision_percent}%...")
+        # 启动定时器延迟重绘
+        self.control_points_timer.start(300)
 
-    def on_refit_timeout(self):
-        """定时器超时，重新拟合所有轮廓"""
-        if self.canvas.contours:
-            self.canvas.refit_all_contours(self.current_precision)
-            self.statusBar().showMessage(f"已重新拟合所有轮廓 (精度: {int(self.current_precision * 100)}%)")
+    def on_control_points_spin_changed(self, value):
+        # 更新滑块
+        slider = self.findChild(QSlider, "slider_control_points")
+        if slider:
+            slider.blockSignals(True)
+            slider.setValue(value)
+            slider.blockSignals(False)
+
+        # 更新标签
+        lbl = self.findChild(QLabel, "lbl_control_points")
+        if lbl:
+            lbl.setText(f"{value} 个点")
+
+        self.control_points_timer.start(300)
+
+    def on_control_points_timeout(self):
+        """定时器超时，重新拟合选中的轮廓"""
+        if not self.canvas.selected_contour:
+            return
+
+        slider = self.findChild(QSlider, "slider_control_points")
+        if not slider:
+            return
+
+        num_points = slider.value()
+        contour = self.canvas.selected_contour
+
+        # 重新拟合该轮廓
+        self.canvas.refit_single_contour(contour, num_points)
+
+        # 更新画布
+        self.canvas.update()
+        self.statusBar().showMessage(f"已重新拟合轮廓 {contour.label}，控制点数: {num_points}")
 
     def on_contour_changed(self):
         """轮廓变化事件"""
@@ -1072,6 +1155,7 @@ class MainWindow(QMainWindow):
                         {"x": float(p.x()), "y": float(p.y())}
                         for p in contour.nurbs_points
                     ],
+                    "control_points": contour.control_points,
                     "color": {
                         "r": contour.color.red(),
                         "g": contour.color.green(),

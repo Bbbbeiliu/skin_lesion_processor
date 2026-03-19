@@ -70,76 +70,6 @@ class ControlPanel(QWidget):
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
 
-        # 拟合精度控制组
-        precision_group = QGroupBox("拟合精度控制")
-        precision_layout = QVBoxLayout()
-
-        # 精度标签
-        precision_label_layout = QHBoxLayout()
-        lbl_precision_title = QLabel("拟合精度:")
-        lbl_precision_value = QLabel("50%")
-        lbl_precision_value.setObjectName("lbl_precision_value")
-        lbl_precision_value.setStyleSheet("font-weight: bold; font-size: 14px; color: #2196F3;")
-        precision_label_layout.addWidget(lbl_precision_title)
-        precision_label_layout.addStretch()
-        precision_label_layout.addWidget(lbl_precision_value)
-        precision_layout.addLayout(precision_label_layout)
-
-        # 精度滑块
-        slider_precision = QSlider(Qt.Horizontal)
-        slider_precision.setObjectName("slider_precision")
-        slider_precision.setRange(50, 200)
-        slider_precision.setValue(100)
-        slider_precision.setTickPosition(QSlider.TicksBelow)
-        slider_precision.setTickInterval(25)
-        slider_precision.setStyleSheet("""
-            QSlider::groove:horizontal {
-                height: 8px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #4CAF50, stop:0.5 #FFC107, stop:1 #F44336);
-                border-radius: 4px;
-            }
-            QSlider::handle:horizontal {
-                background: #2196F3;
-                width: 20px;
-                height: 20px;
-                margin: -6px 0;
-                border-radius: 10px;
-            }
-            QSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #4CAF50, stop:0.5 #FFC107, stop:1 #F44336);
-                border-radius: 4px;
-            }
-        """)
-        slider_precision.valueChanged.connect(self.main_window.on_precision_changed)
-        precision_layout.addWidget(slider_precision)
-
-        # 精度描述
-        precision_desc_layout = QHBoxLayout()
-        lbl_low = QLabel("高精度")
-        lbl_low.setStyleSheet("color: #4CAF50; font-weight: bold;")
-        lbl_medium = QLabel("较高")
-        lbl_medium.setStyleSheet("color: #FFC107; font-weight: bold;")
-        lbl_high = QLabel("极高精度")
-        lbl_high.setStyleSheet("color: #F44336; font-weight: bold;")
-        precision_desc_layout.addWidget(lbl_low)
-        precision_desc_layout.addStretch()
-        precision_desc_layout.addWidget(lbl_medium)
-        precision_desc_layout.addStretch()
-        precision_desc_layout.addWidget(lbl_high)
-        precision_layout.addLayout(precision_desc_layout)
-
-        # 说明文字
-        lbl_precision_info = QLabel("调整滑块实时更新所有轮廓的拟合精度\n50%-100%：高精度范围\n100%-150%：极高精度范围")
-        lbl_precision_info.setStyleSheet(
-            "font-size: 11px; color: #666; padding: 5px; background-color: #f9f9f9; border-radius: 5px;")
-        lbl_precision_info.setWordWrap(True)
-        precision_layout.addWidget(lbl_precision_info)
-
-        precision_group.setLayout(precision_layout)
-        layout.addWidget(precision_group)
-
         # 处理参数组
         params_group = QGroupBox("处理参数")
         params_layout = QFormLayout()
@@ -199,6 +129,27 @@ class ControlPanel(QWidget):
         btn_calibrate_selected.setObjectName("btn_calibrate_selected")
         btn_calibrate_selected.clicked.connect(self.main_window.calibrate_selected_contour)
         selection_layout.addRow(btn_calibrate_selected)
+
+        # 在 selection_group 的 form 布局中添加
+        # self.lbl_control_points = QLabel("当前控制点数: -")
+        # selection_layout.addRow("控制点:", self.lbl_control_points)
+
+        self.slider_control_points = QSlider(Qt.Horizontal)
+        self.slider_control_points.setObjectName("slider_control_points")
+        self.slider_control_points.setRange(10, 500)
+        self.slider_control_points.setValue(120)  # 默认值
+        self.slider_control_points.setTickInterval(50)
+        self.slider_control_points.setTickPosition(QSlider.TicksBelow)
+        self.slider_control_points.valueChanged.connect(self.main_window.on_control_points_changed)
+        selection_layout.addRow("控制点数:", self.slider_control_points)
+
+        # 可选：添加数值显示
+        self.spin_control_points = QSpinBox()
+        self.spin_control_points.setObjectName("spin_control_points")
+        self.spin_control_points.setRange(10, 500)
+        self.spin_control_points.setValue(120)
+        self.spin_control_points.valueChanged.connect(self.main_window.on_control_points_spin_changed)
+        selection_layout.addRow("数值:", self.spin_control_points)
 
         # 显示选项组
         display_group = QGroupBox("显示选项")

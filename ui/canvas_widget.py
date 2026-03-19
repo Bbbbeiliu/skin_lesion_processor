@@ -79,13 +79,15 @@ class CanvasWidget(QWidget):
         self.update()
 
     def add_contour(self, points: np.ndarray, source_image: str = "", label: int = 0,
-                    precision: float = 0.5) -> Contour:
-        """添加轮廓"""
+                    precision: float = 0.5, control_points: int = 120) -> Contour:
         contour = Contour(points, len(self.contours), source_image, label)
         contour.precision = precision
+        contour.control_points = control_points  # 保存控制点数量
 
-        # 使用NURBS曲线拟合
-        nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(points, precision)
+        # 使用 NURBS 拟合（传入控制点数量）
+        nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
+            points, num_control_points=control_points
+        )
         contour.nurbs_points = nurbs_points
         contour.nurbs_curve = nurbs_curve
 
@@ -867,25 +869,42 @@ class CanvasWidget(QWidget):
 
         return inside
 
-    def refit_all_contours(self, precision: float):
-        """使用新的精度重新拟合所有轮廓"""
-        try:
-            for contour in self.contours:
-                if len(contour.original_points) >= 3:
-                    # 重新使用NURBS曲线拟合
-                    contour.precision = precision
-                    nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
-                        contour.original_points, precision
-                    )
-                    contour.nurbs_points = nurbs_points
-                    contour.nurbs_curve = nurbs_curve
+    # def refit_all_contours(self, precision: float):
+    #     """使用新的精度重新拟合所有轮廓"""
+    #     try:
+    #         for contour in self.contours:
+    #             if len(contour.original_points) >= 3:
+    #                 # 重新使用NURBS曲线拟合
+    #                 contour.precision = precision
+    #                 nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
+    #                     contour.original_points, precision
+    #                 )
+    #                 contour.nurbs_points = nurbs_points
+    #                 contour.nurbs_curve = nurbs_curve
+    #
+    #         self.update()
+    #         self.contour_changed.emit()
+    #
+    #     except Exception as e:
+    #         print(f"重新拟合轮廓失败: {str(e)}")
+    #         traceback.print_exc()
 
-            self.update()
-            self.contour_changed.emit()
+    def refit_single_contour(self, contour: Contour, num_control_points: int):
+        """使用指定的控制点数重新拟合单个轮廓"""
+        if len(contour.original_points) < 3:
+            return
 
-        except Exception as e:
-            print(f"重新拟合轮廓失败: {str(e)}")
-            traceback.print_exc()
+        # 调用拟合函数
+        nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
+            contour.original_points,
+            precision=0.5,  # 此处 precision 不再起决定作用，但函数需要
+            num_control_points=num_control_points
+        )
+        contour.nurbs_points = nurbs_points
+        contour.nurbs_curve = nurbs_curve
+        contour.control_points = num_control_points  # 保存当前点数
+
+        self.contour_changed.emit()
 
     def render_contours_only(self, background_color=Qt.white, draw_labels=True):
         """
