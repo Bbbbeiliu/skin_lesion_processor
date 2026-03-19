@@ -6,7 +6,7 @@ import numpy as np
 import traceback
 import math
 from pathlib import Path
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Optional
 from PyQt5.QtCore import QPointF
 from .file_utils import FileUtils
 
@@ -59,7 +59,7 @@ class AdvancedImageProcessor:
                     continue
 
                 # 使用更精确的轮廓近似
-                epsilon = 0.005 * cv2.arcLength(contour, True)  # 更小的epsilon以保留更多细节
+                epsilon = 0.001 * cv2.arcLength(contour, True)  # 更小的epsilon以保留更多细节
                 approx = cv2.approxPolyDP(contour, epsilon, True)
 
                 # 转换为numpy数组并确保维度正确
@@ -132,14 +132,16 @@ class AdvancedImageProcessor:
         return np.array(simplified)
 
     @staticmethod
-    def smooth_contour_with_nurbs(points: np.ndarray, precision: float = 0.5) -> Tuple[List[QPointF], Any]:
+    def smooth_contour_with_nurbs(points: np.ndarray, precision: float = 0.5,
+                                  num_control_points: Optional[int] = None) -> Tuple[List[QPointF], Any]:
         """
-        使用闭合NURBS曲线平滑轮廓
+        使用闭合NURBS曲线平滑轮廓，控制点按曲率自适应采样
         Args:
-            points: 原始轮廓点
-            precision: 拟合精度 (0.0-1.0)
+            points: 原始轮廓点 (numpy数组，形状为 (N, 2) 或 (N, 1, 2))
+            precision: 拟合精度 (0.0-1.0) - 影响简化容差和采样点数量
+            num_control_points: 指定的控制点数量（优先级高于 precision）
         Returns:
-            (NURBS曲线点, NURBS曲线对象) 元组
+            (NURBS曲线点列表, NURBS曲线对象) 元组
         """
         if not GEOMDL_AVAILABLE:
             print("警告: geomdl库未安装，使用贝塞尔曲线替代")
@@ -153,68 +155,67 @@ class AdvancedImageProcessor:
         if points.ndim != 2 or points.shape[1] != 2:
             return [], None
 
-        # 确保是闭合轮廓
+        # 确保轮廓闭合
         if not np.array_equal(points[0], points[-1]):
             points = np.vstack([points, points[0]])
 
         try:
-            # 根据精度计算参数
-            num_control_points = max(10, min(50, int(pow(precision, 1.5) * 40 + 10)))
-            degree = 3 if precision > 0.3 else 2
-            sample_points = max(100, min(300, int(precision * 200 + 100)))
+            # 计算简化容差（基于精度）
             simplify_tolerance = max(0.5, min(5.0, (1.0 - precision) * 10))
+            degree = 3 if precision > 0.3 else 2
 
-            # 先进行简化
+            # 第一步：简化轮廓（RDP）
             simplified_points = AdvancedImageProcessor.simplify_contour(points, simplify_tolerance)
-
-            # 如果简化后点数太少，使用原始点
             if len(simplified_points) < 3:
                 simplified_points = points
 
-            # 如果点数太多，均匀采样
-            if len(simplified_points) > num_control_points * 2:
-                indices = np.linspace(0, len(simplified_points) - 1, num_control_points * 2, dtype=int)
-                control_points_source = simplified_points[indices]
+            # 确定目标控制点数量
+            if num_control_points is not None:
+                target_control_points = max(degree + 1, min(500, num_control_points))
             else:
-                control_points_source = simplified_points
+                target_control_points = max(10, min(50, int(pow(precision, 1.5) * 40 + 10)))
+
+            # --- 均匀采样（回退至原始方案）---
+            src_points = simplified_points  # 列表
+            src_len = len(src_points)
+
+            if src_len <= target_control_points:
+                selected_indices = list(range(src_len))
+            else:
+                step = src_len / target_control_points
+                selected_indices = [int(i * step) for i in range(target_control_points)]
+
+            control_points_list = []
+            for idx in selected_indices:
+                pt = src_points[idx]
+                if len(pt) == 2:
+                    control_points_list.append([float(pt[0]), float(pt[1]), 1.0])
+                else:
+                    control_points_list.append([float(pt[0]), float(pt[1]), float(pt[2]) if len(pt) > 2 else 1.0])
+            # --- 均匀采样结束 ---
+
+            # 确保控制点数量满足最低要求（degree+1）
+            while len(control_points_list) < degree + 1:
+                pt = simplified_points[-1]
+                control_points_list.append([float(pt[0]), float(pt[1]), 1.0])
 
             # 创建NURBS曲线
             curve = NURBS.Curve()
             curve.degree = degree
-
-            # 设置控制点
-            control_points_list = []
-            step = max(1, len(control_points_source) // num_control_points)
-            for i in range(0, len(control_points_source), step):
-                if len(control_points_list) >= num_control_points:
-                    break
-                control_points_list.append([float(control_points_source[i][0]),
-                                            float(control_points_source[i][1]), 1.0])
-
-            # 确保有足够控制点
-            while len(control_points_list) < degree + 1:
-                control_points_list.append([float(control_points_source[0][0]),
-                                            float(control_points_source[0][1]), 1.0])
-
-            # 限制控制点数量
-            if len(control_points_list) > num_control_points:
-                control_points_list = control_points_list[:num_control_points]
-
             curve.ctrlpts = control_points_list
 
             # 自动生成节点向量
             curve.knotvector = knotvector.generate(curve.degree, len(curve.ctrlpts))
 
-            # 设置采样点数
+            # 设置采样点数（用于曲线求值）
+            sample_points = max(100, min(300, int(precision * 200 + 100)))
             curve.sample_size = sample_points
 
             # 计算曲线上的点
             curve_points = curve.evalpts
 
             # 转换为QPointF列表
-            nurbs_points = []
-            for pt in curve_points:
-                nurbs_points.append(QPointF(float(pt[0]), float(pt[1])))
+            nurbs_points = [QPointF(float(p[0]), float(p[1])) for p in curve_points]
 
             # 确保曲线闭合
             if len(nurbs_points) > 1 and nurbs_points[0] != nurbs_points[-1]:
@@ -225,7 +226,7 @@ class AdvancedImageProcessor:
         except Exception as e:
             print(f"NURBS曲线拟合错误: {str(e)}")
             traceback.print_exc()
-            # 如果NURBS失败，回退到贝塞尔曲线
+            # 失败时回退到贝塞尔曲线
             _, nurbs_points = AdvancedImageProcessor.smooth_contour_with_cubic_bezier(points, int(precision * 40 + 10))
             return nurbs_points, None
 

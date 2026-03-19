@@ -31,7 +31,7 @@ class Contour:
         # NURBS参数
         self.nurbs_curve = None  # 存储NURBS曲线对象
         self.precision = 0.5  # 拟合精度
-
+        self.control_points = 50  # 默认控制点数
         # 计算初始包围盒
         self.calculate_bounding_box()
 
