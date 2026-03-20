@@ -5,12 +5,14 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QPushButton, QLabel, QSlider, QSpinBox, QDoubleSpinBox,
                              QCheckBox, QListWidget, QListWidgetItem, QFormLayout,
                              QFrame, QListWidget)
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QFont
 
 
 class ControlPanel(QWidget):
     """控制面板"""
+
+    lock_state_changed = pyqtSignal(bool)  # 锁定状态改变信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,43 +88,60 @@ class ControlPanel(QWidget):
         layout.addWidget(params_group)
 
         # 选中轮廓操作组
-        selection_group = QGroupBox("选中轮廓操作")
-        selection_group.setObjectName("selection_group")
-        selection_group.setEnabled(False)  # 初始禁用
+        self.selection_group = QGroupBox("选中轮廓操作")
+        self.selection_group.setObjectName("selection_group")
+        self.selection_group.setEnabled(False)  # 初始禁用
         selection_layout = QFormLayout()
 
-        lbl_selected_info = QLabel("未选中轮廓")
-        lbl_selected_info.setObjectName("lbl_selected_info")
-        lbl_selected_info.setStyleSheet("font-weight: bold; color: #2196F3; padding: 5px;")
-        selection_layout.addRow("状态:", lbl_selected_info)
+        self.lbl_selected_info = QLabel("未选中轮廓")
+        self.lbl_selected_info.setObjectName("lbl_selected_info")
+        self.lbl_selected_info.setStyleSheet("font-weight: bold; color: #2196F3; padding: 5px;")
+        selection_layout.addRow("状态:", self.lbl_selected_info)
 
-        spin_width = QDoubleSpinBox()
-        spin_width.setObjectName("spin_width")
-        spin_width.setRange(0.1, 30.0)
-        spin_width.setValue(5.0)
-        spin_width.setSuffix(" cm")
-        spin_width.setDecimals(1)
-        spin_width.setSingleStep(0.1)
-        spin_width.setStyleSheet("padding: 5px;")
-        selection_layout.addRow("宽度:", spin_width)
+        # 新代码：
+        self.spin_width = QDoubleSpinBox()
+        self.spin_width.setObjectName("spin_width")
+        self.spin_width.setRange(0.1, 30.0)
+        self.spin_width.setValue(5.0)
+        self.spin_width.setSuffix(" cm")
+        self.spin_width.setDecimals(1)
+        self.spin_width.setSingleStep(0.1)
+        self.spin_width.setStyleSheet("padding: 5px;")
 
-        spin_height = QDoubleSpinBox()
-        spin_height.setObjectName("spin_height")
-        spin_height.setRange(0.1, 30.0)
-        spin_height.setValue(5.0)
-        spin_height.setSuffix(" cm")
-        spin_height.setDecimals(1)
-        spin_height.setSingleStep(0.1)
-        spin_height.setStyleSheet("padding: 5px;")
-        selection_layout.addRow("高度:", spin_height)
+        # 锁定按钮
+        self.lock_btn = QPushButton("🔒")
+        self.lock_btn.setCheckable(True)
+        self.lock_btn.setChecked(True)  # 默认锁定
+        self.lock_btn.setFixedSize(30, 30)
+        self.lock_btn.setToolTip("锁定宽高比")
+
+        # 水平布局包装
+        width_widget = QWidget()
+        width_layout = QHBoxLayout(width_widget)
+        width_layout.setContentsMargins(0, 0, 0, 0)
+        width_layout.addWidget(self.spin_width)
+        width_layout.addWidget(self.lock_btn)
+        selection_layout.addRow("宽度:", width_widget)
+
+        # 高度输入框（保持原名）
+        self.spin_height = QDoubleSpinBox()
+        self.spin_height.setObjectName("spin_height")
+        self.spin_height.setRange(0.1, 30.0)
+        self.spin_height.setValue(5.0)
+        self.spin_height.setSuffix(" cm")
+        self.spin_height.setDecimals(1)
+        self.spin_height.setSingleStep(0.1)
+        self.spin_height.setStyleSheet("padding: 5px;")
+        selection_layout.addRow("高度:", self.spin_height)
+
 
         btn_apply_size = QPushButton("应用尺寸")
         btn_apply_size.setObjectName("btn_apply_size")
         btn_apply_size.clicked.connect(self.main_window.apply_contour_size)
         selection_layout.addRow(btn_apply_size)
 
-        selection_group.setLayout(selection_layout)
-        layout.addWidget(selection_group)
+        self.selection_group.setLayout(selection_layout)
+        layout.addWidget(self.selection_group)
 
         # 在selection_group中，在btn_apply_size后面添加：
         btn_calibrate_selected = QPushButton("自动标定选中轮廓")
@@ -271,3 +290,10 @@ class ControlPanel(QWidget):
         layout.addWidget(btn_show_label_mapping)
 
         layout.addStretch()
+
+        self.lock_btn.toggled.connect(self.on_lock_toggled)
+
+    def on_lock_toggled(self, checked):
+        """锁定状态改变时禁用/启用高度输入框，并发射信号"""
+        self.spin_height.setEnabled(not checked)
+        self.lock_state_changed.emit(checked)

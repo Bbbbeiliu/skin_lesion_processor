@@ -191,20 +191,18 @@ class CanvasWidget(QWidget):
         try:
             painter.save()
 
-            # 获取轮廓的显示矩形
             display_rect = contour.get_display_rect()
             if display_rect.isNull():
                 painter.restore()
                 return
 
-            # 计算平移和缩放值
-            scale = contour.scale
-            translate_x = display_rect.left() - contour.bounding_box.left() * scale
-            translate_y = display_rect.top() - contour.bounding_box.top() * scale
+            scale_x = contour.scale_x
+            scale_y = contour.scale_y
+            translate_x = display_rect.left() - contour.bounding_box.left() * scale_x
+            translate_y = display_rect.top() - contour.bounding_box.top() * scale_y
 
-            # 应用轮廓自身的变换
             painter.translate(translate_x, translate_y)
-            painter.scale(scale, scale)
+            painter.scale(scale_x, scale_y)
 
             # 绘制原始轮廓 - 使用深灰色
             if self.show_original_contour and len(contour.original_points) > 1:
@@ -227,11 +225,11 @@ class CanvasWidget(QWidget):
                 # 根据是否选中设置颜色和线宽
                 if contour.is_selected:
                     pen_color = QColor(0, 100, 255)  # 深蓝色
-                    pen_width = 4 / contour.scale
+                    pen_width = 4 / min(scale_x, scale_y)
                 else:
                     # 使用轮廓的原始颜色
                     pen_color = contour.color
-                    pen_width = 3 / contour.scale
+                    pen_width = 3 / min(scale_x, scale_y)
 
                 painter.setPen(QPen(pen_color, pen_width))
 
@@ -406,7 +404,6 @@ class CanvasWidget(QWidget):
         painter.restore()
 
     def mousePressEvent(self, event):
-        """鼠标按下事件"""
         try:
             pos = event.pos()
             self.drag_start_pos = pos
@@ -427,41 +424,37 @@ class CanvasWidget(QWidget):
                     (pos.y() - self.pan_offset.y()) / self.zoom_factor
                 )
 
-                # 将显示坐标转换到轮廓局部坐标系
+                # 将显示坐标转换到轮廓局部坐标系（考虑非均匀缩放）
                 rect = self.selected_contour.get_display_rect()
                 if not rect.isNull():
-                    scale = self.selected_contour.scale
+                    scale_x = self.selected_contour.scale_x
+                    scale_y = self.selected_contour.scale_y
                     bbox = self.selected_contour.bounding_box
 
-                    # 计算从显示坐标到局部坐标的变换
-                    # 显示坐标 = 局部坐标 * scale + 平移
-                    # 所以局部坐标 = (显示坐标 - 平移) / scale
-                    local_x = (display_pos.x() - rect.left() + bbox.left() * scale) / scale
-                    local_y = (display_pos.y() - rect.top() + bbox.top() * scale) / scale
+                    # 局部坐标 = (显示坐标 - 显示矩形左上角) / 缩放因子 + 包围盒左上角
+                    local_x = (display_pos.x() - rect.left()) / scale_x + bbox.left()
+                    local_y = (display_pos.y() - rect.top()) / scale_y + bbox.top()
                     local_pos = QPointF(local_x, local_y)
 
-                    # 检查是否点击了控制点
-                    handle_size = 10 / scale
+                    # 检查是否点击了控制点（控制点仍基于原始包围盒的局部坐标）
+                    handle_size = 10 / min(scale_x, scale_y)  # 保持视觉大小一致
                     bbox = self.selected_contour.bounding_box
 
-                    # 检查每个控制点
                     handles = [
                         QRectF(bbox.left() - handle_size / 2, bbox.top() - handle_size / 2, handle_size, handle_size),
-                        # 左上
                         QRectF(bbox.center().x() - handle_size / 2, bbox.top() - handle_size / 2, handle_size,
-                               handle_size),  # 上中
+                               handle_size),
                         QRectF(bbox.right() - handle_size / 2, bbox.top() - handle_size / 2, handle_size, handle_size),
-                        # 右上
                         QRectF(bbox.right() - handle_size / 2, bbox.center().y() - handle_size / 2, handle_size,
-                               handle_size),  # 右中
+                               handle_size),
                         QRectF(bbox.right() - handle_size / 2, bbox.bottom() - handle_size / 2, handle_size,
-                               handle_size),  # 右下
+                               handle_size),
                         QRectF(bbox.center().x() - handle_size / 2, bbox.bottom() - handle_size / 2, handle_size,
-                               handle_size),  # 下中
+                               handle_size),
                         QRectF(bbox.left() - handle_size / 2, bbox.bottom() - handle_size / 2, handle_size,
-                               handle_size),  # 左下
+                               handle_size),
                         QRectF(bbox.left() - handle_size / 2, bbox.center().y() - handle_size / 2, handle_size,
-                               handle_size)  # 左中
+                               handle_size)
                     ]
 
                     for i, handle_rect in enumerate(handles):
@@ -482,7 +475,6 @@ class CanvasWidget(QWidget):
                 self.select_contour(clicked_contour)
                 self.dragging = True
                 rect = clicked_contour.get_display_rect()
-                # 需要将屏幕坐标转换到显示坐标
                 display_pos = QPointF(
                     (pos.x() - self.pan_offset.x()) / self.zoom_factor,
                     (pos.y() - self.pan_offset.y()) / self.zoom_factor
@@ -502,7 +494,6 @@ class CanvasWidget(QWidget):
             print(f"鼠标按下事件错误: {str(e)}")
 
     def mouseMoveEvent(self, event):
-        """鼠标移动事件"""
         try:
             pos = event.pos()
 
@@ -523,23 +514,22 @@ class CanvasWidget(QWidget):
 
             # 检查是否悬停在控制点上
             if self.selected_contour:
-                # 将屏幕坐标转换到显示坐标系
                 display_pos = QPointF(
                     (pos.x() - self.pan_offset.x()) / self.zoom_factor,
                     (pos.y() - self.pan_offset.y()) / self.zoom_factor
                 )
 
-                # 将显示坐标转换到轮廓局部坐标系
                 rect = self.selected_contour.get_display_rect()
                 if not rect.isNull():
-                    scale = self.selected_contour.scale
+                    scale_x = self.selected_contour.scale_x
+                    scale_y = self.selected_contour.scale_y
                     bbox = self.selected_contour.bounding_box
 
-                    local_x = (display_pos.x() - rect.left() + bbox.left() * scale) / scale
-                    local_y = (display_pos.y() - rect.top() + bbox.top() * scale) / scale
+                    local_x = (display_pos.x() - rect.left()) / scale_x + bbox.left()
+                    local_y = (display_pos.y() - rect.top()) / scale_y + bbox.top()
                     local_pos = QPointF(local_x, local_y)
 
-                    handle_size = 10 / scale
+                    handle_size = 10 / min(scale_x, scale_y)
                     bbox = self.selected_contour.bounding_box
 
                     handles = [
@@ -573,51 +563,39 @@ class CanvasWidget(QWidget):
 
             # 更新光标
             if self.hovered_handle_idx != -1:
-                # 设置适当的光标形状
-                if self.hovered_handle_idx in [0, 4]:  # 对角
+                if self.hovered_handle_idx in [0, 4]:
                     self.setCursor(Qt.SizeFDiagCursor)
-                elif self.hovered_handle_idx in [2, 6]:  # 对角
+                elif self.hovered_handle_idx in [2, 6]:
                     self.setCursor(Qt.SizeBDiagCursor)
-                elif self.hovered_handle_idx in [1, 5]:  # 上下
+                elif self.hovered_handle_idx in [1, 5]:
                     self.setCursor(Qt.SizeVerCursor)
-                elif self.hovered_handle_idx in [3, 7]:  # 左右
+                elif self.hovered_handle_idx in [3, 7]:
                     self.setCursor(Qt.SizeHorCursor)
             elif self.hovered_contour:
                 self.setCursor(Qt.OpenHandCursor)
             else:
                 self.setCursor(Qt.ArrowCursor)
 
-            # 如果需要重绘
             if (old_hovered != self.hovered_contour or
                     old_handle_idx != self.hovered_handle_idx):
                 self.update()
 
             # 处理拖动
             if self.dragging and self.selected_contour:
-                # 将屏幕坐标转换到显示坐标系
                 display_pos = QPointF(
                     (pos.x() - self.pan_offset.x()) / self.zoom_factor,
                     (pos.y() - self.pan_offset.y()) / self.zoom_factor
                 )
-
-                # 更新位置
                 new_pos = display_pos - self.drag_offset
-
-                # 确保不超出画布边界
                 display_rect = self.selected_contour.get_display_rect()
                 max_x = (self.width() - display_rect.width() * self.zoom_factor) / self.zoom_factor
                 max_y = (self.height() - display_rect.height() * self.zoom_factor) / self.zoom_factor
-
                 new_pos.setX(max(0, min(new_pos.x(), max_x)))
                 new_pos.setY(max(0, min(new_pos.y(), max_y)))
-
-                # 更新轮廓位置
                 self.selected_contour.position = new_pos
                 self.update()
 
-            # 处理控制点拖动
             elif self.dragging_handle and self.selected_contour:
-                # 将屏幕坐标转换到显示坐标系
                 display_pos = QPointF(
                     (pos.x() - self.pan_offset.x()) / self.zoom_factor,
                     (pos.y() - self.pan_offset.y()) / self.zoom_factor
@@ -676,112 +654,152 @@ class CanvasWidget(QWidget):
             self.update()
 
     def resize_with_handle(self, display_pos: QPointF):
-        """通过控制点调整大小"""
+        """通过控制点调整大小（支持非均匀缩放）"""
         if not self.selected_contour:
             return
 
         rect = self.selected_contour.get_display_rect()
-        original_aspect = rect.width() / rect.height()
+        if rect.isNull():
+            return
+
+        # 获取当前缩放因子
+        scale_x = self.selected_contour.scale_x
+        scale_y = self.selected_contour.scale_y
+        bbox = self.selected_contour.bounding_box
 
         # 获取键盘修饰符
         from PyQt5.QtWidgets import QApplication
         modifiers = QApplication.keyboardModifiers()
+        keep_aspect = bool(modifiers & Qt.ShiftModifier)
 
-        # 根据控制点调整
+        # 当前宽高（显示像素）
+        current_width = rect.width()
+        current_height = rect.height()
+        if keep_aspect:
+            aspect = current_width / current_height if current_height != 0 else 1.0
+
+        # 根据控制点索引调整
         if self.resize_handle_idx == 0:  # 左上
-            new_width = rect.right() - display_pos.x()
-            new_height = rect.bottom() - display_pos.y()
-            if new_width > 10 and new_height > 10:
-                # 保持纵横比
-                if modifiers & Qt.ShiftModifier:
-                    new_aspect = new_width / new_height
-                    if abs(new_aspect - original_aspect) > 0.1:
-                        # 使用较小的变化
-                        if new_width / rect.width() < new_height / rect.height():
-                            new_height = new_width / original_aspect
-                        else:
-                            new_width = new_height * original_aspect
-
-                self.selected_contour.position = QPointF(display_pos.x(), display_pos.y())
-                self.selected_contour.scale = min(
-                    new_width / self.selected_contour.bounding_box.width(),
-                    new_height / self.selected_contour.bounding_box.height()
-                )
+            new_left = display_pos.x()
+            new_top = display_pos.y()
+            new_width = rect.right() - new_left
+            new_height = rect.bottom() - new_top
+            if new_width > 0 and new_height > 0:
+                if keep_aspect:
+                    desired_height = new_width / aspect
+                    if desired_height <= new_height:
+                        new_height = desired_height
+                    else:
+                        new_width = new_height * aspect
+                self.selected_contour.position = QPointF(new_left, new_top)
+                self.selected_contour.scale_x = new_width / bbox.width()
+                self.selected_contour.scale_y = new_height / bbox.height()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 1:  # 上中
-            new_height = rect.bottom() - display_pos.y()
-            if new_height > 10:
-                self.selected_contour.position = QPointF(rect.left(), display_pos.y())
-                self.selected_contour.scale = new_height / self.selected_contour.bounding_box.height()
+            new_top = display_pos.y()
+            new_height = rect.bottom() - new_top
+            if new_height > 0:
+                if keep_aspect:
+                    new_width = new_height * aspect
+                    self.selected_contour.position = QPointF(rect.left() - (new_width - current_width) / 2, new_top)
+                    self.selected_contour.scale_x = new_width / bbox.width()
+                else:
+                    self.selected_contour.position = QPointF(rect.left(), new_top)
+                self.selected_contour.scale_y = new_height / bbox.height()
+                if not keep_aspect:
+                    self.selected_contour.scale_x = current_width / bbox.width()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 2:  # 右上
-            new_width = display_pos.x() - rect.left()
-            new_height = rect.bottom() - display_pos.y()
-            if new_width > 10 and new_height > 10:
-                if modifiers & Qt.ShiftModifier:
-                    new_aspect = new_width / new_height
-                    if abs(new_aspect - original_aspect) > 0.1:
-                        if new_width / rect.width() < new_height / rect.height():
-                            new_height = new_width / original_aspect
-                        else:
-                            new_width = new_height * original_aspect
-
-                self.selected_contour.position = QPointF(rect.left(), display_pos.y())
-                self.selected_contour.scale = min(
-                    new_width / self.selected_contour.bounding_box.width(),
-                    new_height / self.selected_contour.bounding_box.height()
-                )
+            new_right = display_pos.x()
+            new_top = display_pos.y()
+            new_width = new_right - rect.left()
+            new_height = rect.bottom() - new_top
+            if new_width > 0 and new_height > 0:
+                if keep_aspect:
+                    desired_height = new_width / aspect
+                    if desired_height <= new_height:
+                        new_height = desired_height
+                    else:
+                        new_width = new_height * aspect
+                self.selected_contour.position = QPointF(rect.left(), new_top)
+                self.selected_contour.scale_x = new_width / bbox.width()
+                self.selected_contour.scale_y = new_height / bbox.height()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 3:  # 右中
-            new_width = display_pos.x() - rect.left()
-            if new_width > 10:
-                self.selected_contour.scale = new_width / self.selected_contour.bounding_box.width()
+            new_right = display_pos.x()
+            new_width = new_right - rect.left()
+            if new_width > 0:
+                if keep_aspect:
+                    new_height = new_width / aspect
+                    self.selected_contour.position = QPointF(rect.left(),
+                                                             rect.top() - (new_height - current_height) / 2)
+                    self.selected_contour.scale_y = new_height / bbox.height()
+                self.selected_contour.scale_x = new_width / bbox.width()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 4:  # 右下
-            new_width = display_pos.x() - rect.left()
-            new_height = display_pos.y() - rect.top()
-            if new_width > 10 and new_height > 10:
-                if modifiers & Qt.ShiftModifier:
-                    new_aspect = new_width / new_height
-                    if abs(new_aspect - original_aspect) > 0.1:
-                        if new_width / rect.width() < new_height / rect.height():
-                            new_height = new_width / original_aspect
-                        else:
-                            new_width = new_height * original_aspect
-
-                self.selected_contour.scale = min(
-                    new_width / self.selected_contour.bounding_box.width(),
-                    new_height / self.selected_contour.bounding_box.height()
-                )
+            new_right = display_pos.x()
+            new_bottom = display_pos.y()
+            new_width = new_right - rect.left()
+            new_height = new_bottom - rect.top()
+            if new_width > 0 and new_height > 0:
+                if keep_aspect:
+                    desired_height = new_width / aspect
+                    if desired_height <= new_height:
+                        new_height = desired_height
+                    else:
+                        new_width = new_height * aspect
+                self.selected_contour.scale_x = new_width / bbox.width()
+                self.selected_contour.scale_y = new_height / bbox.height()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 5:  # 下中
-            new_height = display_pos.y() - rect.top()
-            if new_height > 10:
-                self.selected_contour.scale = new_height / self.selected_contour.bounding_box.height()
+            new_bottom = display_pos.y()
+            new_height = new_bottom - rect.top()
+            if new_height > 0:
+                if keep_aspect:
+                    new_width = new_height * aspect
+                    self.selected_contour.position = QPointF(rect.left() - (new_width - current_width) / 2, rect.top())
+                    self.selected_contour.scale_x = new_width / bbox.width()
+                else:
+                    self.selected_contour.position = QPointF(rect.left(), rect.top())
+                self.selected_contour.scale_y = new_height / bbox.height()
+                if not keep_aspect:
+                    self.selected_contour.scale_x = current_width / bbox.width()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 6:  # 左下
-            new_width = rect.right() - display_pos.x()
-            new_height = display_pos.y() - rect.top()
-            if new_width > 10 and new_height > 10:
-                if modifiers & Qt.ShiftModifier:
-                    new_aspect = new_width / new_height
-                    if abs(new_aspect - original_aspect) > 0.1:
-                        if new_width / rect.width() < new_height / rect.height():
-                            new_height = new_width / original_aspect
-                        else:
-                            new_width = new_height * original_aspect
-
-                self.selected_contour.position = QPointF(display_pos.x(), rect.top())
-                self.selected_contour.scale = min(
-                    new_width / self.selected_contour.bounding_box.width(),
-                    new_height / self.selected_contour.bounding_box.height()
-                )
+            new_left = display_pos.x()
+            new_bottom = display_pos.y()
+            new_width = rect.right() - new_left
+            new_height = new_bottom - rect.top()
+            if new_width > 0 and new_height > 0:
+                if keep_aspect:
+                    desired_height = new_width / aspect
+                    if desired_height <= new_height:
+                        new_height = desired_height
+                    else:
+                        new_width = new_height * aspect
+                self.selected_contour.position = QPointF(new_left, rect.top())
+                self.selected_contour.scale_x = new_width / bbox.width()
+                self.selected_contour.scale_y = new_height / bbox.height()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         elif self.resize_handle_idx == 7:  # 左中
-            new_width = rect.right() - display_pos.x()
-            if new_width > 10:
-                self.selected_contour.position = QPointF(display_pos.x(), rect.top())
-                self.selected_contour.scale = new_width / self.selected_contour.bounding_box.width()
+            new_left = display_pos.x()
+            new_width = rect.right() - new_left
+            if new_width > 0:
+                if keep_aspect:
+                    new_height = new_width / aspect
+                    self.selected_contour.position = QPointF(new_left, rect.top() - (new_height - current_height) / 2)
+                    self.selected_contour.scale_y = new_height / bbox.height()
+                else:
+                    self.selected_contour.position = QPointF(new_left, rect.top())
+                self.selected_contour.scale_x = new_width / bbox.width()
+                self.selected_contour.scale = (self.selected_contour.scale_x + self.selected_contour.scale_y) / 2.0
 
         # 发出信号更新UI
         self.contour_selected.emit(self.selected_contour)
@@ -836,37 +854,26 @@ class CanvasWidget(QWidget):
             return False
 
     def is_point_in_contour(self, point: QPointF, contour: Contour) -> bool:
-        """使用射线法判断点是否在轮廓内"""
         if not contour.nurbs_points:
             return False
-
-        # 获取轮廓的显示矩形和变换参数
         display_rect = contour.get_display_rect()
         if display_rect.isNull():
             return False
-
-        # 计算局部坐标
-        local_x = (point.x() - display_rect.left()) / contour.scale + contour.bounding_box.left()
-        local_y = (point.y() - display_rect.top()) / contour.scale + contour.bounding_box.top()
+        local_x = (point.x() - display_rect.left()) / contour.scale_x + contour.bounding_box.left()
+        local_y = (point.y() - display_rect.top()) / contour.scale_y + contour.bounding_box.top()
         local_point = QPointF(local_x, local_y)
 
-        # 射线法
         n = len(contour.nurbs_points)
         if n < 3:
             return False
-
         inside = False
         p1 = contour.nurbs_points[0]
-
         for i in range(1, n + 1):
             p2 = contour.nurbs_points[i % n]
-
             if (p1.y() > local_point.y()) != (p2.y() > local_point.y()):
                 if local_point.x() < (p2.x() - p1.x()) * (local_point.y() - p1.y()) / (p2.y() - p1.y()) + p1.x():
                     inside = not inside
-
             p1 = p2
-
         return inside
 
     # def refit_all_contours(self, precision: float):

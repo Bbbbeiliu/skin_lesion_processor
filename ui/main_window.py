@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         sim_dock.setVisible(False)  # 默认隐藏，需要时显示
         self.addDockWidget(Qt.RightDockWidgetArea, sim_dock)
         self.sim_dock = sim_dock
+        self.lock_aspect = True  # 默认锁定高宽比
 
         # 设置异常处理
         sys.excepthook = self.exception_hook
@@ -145,7 +146,7 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central_widget)
 
         # 创建控制面板（左侧）
-        control_panel = self.create_control_panel()
+        self.control_panel = self.create_control_panel()
 
         # 创建画布容器（右侧，垂直布局）
         canvas_container = QWidget()
@@ -177,7 +178,7 @@ class MainWindow(QMainWindow):
         canvas_layout.addWidget(page_widget)
 
         # 将控制面板和画布容器添加到主布局
-        main_layout.addWidget(control_panel, 1)
+        main_layout.addWidget(self.control_panel, 1)
         main_layout.addWidget(canvas_container, 3)
 
         # 创建菜单栏
@@ -194,6 +195,57 @@ class MainWindow(QMainWindow):
 
         # 添加激光控制功能区（如原代码）
         self.init_laser_control_panel()
+
+        self.control_panel.lock_state_changed.connect(self.on_aspect_lock_changed)
+
+    def _update_height_from_width(self, new_width_cm=None):
+        """锁定状态下，根据当前宽度按原始比例更新高度输入框（不触发应用尺寸）"""
+        if not self.canvas.selected_contour:
+            return
+        contour = self.canvas.selected_contour
+        spin_width = self.control_panel.spin_width
+        spin_height = self.control_panel.spin_height
+        if not spin_width or not spin_height:
+            return
+
+        if new_width_cm is None:
+            new_width_cm = spin_width.value()
+
+        # 使用原始包围盒比例，而不是当前显示比例
+        bbox = contour.bounding_box
+        if bbox.width() <= 0 or bbox.height() <= 0:
+            return
+        aspect = bbox.height() / bbox.width()  # 原始高度/宽度比
+        new_height_cm = new_width_cm * aspect
+
+        self._updating_spins = True
+        spin_height.blockSignals(True)
+        spin_height.setValue(new_height_cm)
+        spin_height.blockSignals(False)
+        self._updating_spins = False
+
+    def _update_width_from_height(self):
+        """锁定状态下，根据当前高度按比例更新宽度输入框（一般不会用到，但保留）"""
+        if not self.canvas.selected_contour:
+            return
+        spin_width = self.control_panel.spin_width
+        spin_height = self.control_panel.spin_height
+        if not spin_width or not spin_height:
+            return
+        rect = self.canvas.selected_contour.get_display_rect()
+        if rect.isNull():
+            return
+        current_width_cm = rect.width() / self.canvas.pixels_per_cm
+        current_height_cm = rect.height() / self.canvas.pixels_per_cm
+        if current_height_cm == 0:
+            return
+        aspect = current_width_cm / current_height_cm
+        new_width_cm = spin_height.value() * aspect
+        self._updating_spins = True
+        spin_width.blockSignals(True)
+        spin_width.setValue(new_width_cm)
+        spin_width.blockSignals(False)
+        self._updating_spins = False
 
     def create_control_panel(self) -> QWidget:
         """创建控制面板"""
@@ -795,20 +847,9 @@ class MainWindow(QMainWindow):
     def clear_contours(self):
         """清空所有轮廓"""
         self.canvas.clear()
-        # 找到列表控件
-        # contour_list_widget = self.findChild(QListWidget, "contour_list_widget")
-        # if contour_list_widget:
-        #     contour_list_widget.clear()
-
-        # 找到选择组
-        selection_group = self.findChild(QGroupBox, "selection_group")
-        if selection_group:
-            selection_group.setEnabled(False)
-
-        # 找到选中信息标签
-        lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
-        if lbl_selected_info:
-            lbl_selected_info.setText("未选中轮廓")
+        # 使用 control_panel 中的 selection_group 和 lbl_selected_info
+        self.control_panel.selection_group.setEnabled(False)
+        self.control_panel.lbl_selected_info.setText("未选中轮廓")
 
         self.label_to_image_map.clear()
         self.canvas.label_to_image_mapping.clear()
@@ -816,99 +857,59 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("已清空所有轮廓")
 
     def on_contour_selected(self, contour):
-        """轮廓选中事件处理"""
-        # 获取控件引用
-        selection_group = self.findChild(QGroupBox, "selection_group")
-        lbl_selected_info = self.findChild(QLabel, "lbl_selected_info")
-        spin_width = self.findChild(QDoubleSpinBox, "spin_width")
-        spin_height = self.findChild(QDoubleSpinBox, "spin_height")
-        slider_cp = self.findChild(QSlider, "slider_control_points")
-        spin_cp = self.findChild(QSpinBox, "spin_control_points")
-        lbl_cp = self.findChild(QLabel, "lbl_control_points")
-
         if contour:
-            # 选中状态
-            if selection_group:
-                selection_group.setEnabled(True)
-            if lbl_selected_info:
-                label_info = f"标号 {contour.label}" if contour.label > 0 else "无标号"
-                lbl_selected_info.setText(f"{label_info} - 轮廓 {contour.id} ({contour.source_image})")
-
-            # 更新尺寸显示
+            self.control_panel.selection_group.setEnabled(True)
+            label_info = f"标号 {contour.label}" if contour.label > 0 else "无标号"
+            self.control_panel.lbl_selected_info.setText(f"{label_info} - 轮廓 {contour.id} ({contour.source_image})")
             rect = contour.get_display_rect()
             width_cm = rect.width() / self.canvas.pixels_per_cm
             height_cm = rect.height() / self.canvas.pixels_per_cm
-            if spin_width and spin_height:
-                self._updating_spins = True
-                spin_width.setValue(width_cm)
-                spin_height.setValue(height_cm)
-                self._updating_spins = False
-
-            # 更新控制点数量显示
-            num_points = getattr(contour, 'control_points', 120)  # 默认120
-            # 限制到滑块范围 10-200（确保不超出）
-            num_points = max(10, min(500, num_points))
-            # 如果轮廓的 control_points 与限制后的值不同，更新轮廓属性（可选）
-            if num_points != getattr(contour, 'control_points', None):
-                contour.control_points = num_points
-
-            if slider_cp and spin_cp:
-                slider_cp.blockSignals(True)
-                spin_cp.blockSignals(True)
-                slider_cp.setValue(num_points)
-                spin_cp.setValue(num_points)
-                slider_cp.setEnabled(True)  # 启用滑块
-                spin_cp.setEnabled(True)  # 启用数值框
-                slider_cp.blockSignals(False)
-                spin_cp.blockSignals(False)
-            if lbl_cp:
-                lbl_cp.setText(f"{num_points} 个点")
-                lbl_cp.setEnabled(True)
+            self._updating_spins = True
+            self.control_panel.spin_width.setValue(width_cm)
+            self.control_panel.spin_height.setValue(height_cm)
+            locked = self.control_panel.lock_btn.isChecked()
+            self.control_panel.spin_height.setEnabled(not locked)
+            if locked:
+                self._update_height_from_width()
+            self._updating_spins = False
         else:
-            # 未选中状态
-            if selection_group:
-                selection_group.setEnabled(False)
-            if lbl_selected_info:
-                lbl_selected_info.setText("未选中轮廓")
-            # 禁用控制点控件
-            if slider_cp:
-                slider_cp.setEnabled(False)
-            if spin_cp:
-                spin_cp.setEnabled(False)
-            if lbl_cp:
-                lbl_cp.setEnabled(False)
+            self.control_panel.selection_group.setEnabled(False)
+            self.control_panel.lbl_selected_info.setText("未选中轮廓")
 
     def on_spin_width_changed(self, value):
-        """宽度变化时，按比例更新高度"""
         if self._updating_spins or not self.canvas.selected_contour:
             return
-        self._updating_spins = True
-        spin_height = self.findChild(QDoubleSpinBox, "spin_height")
-        if spin_height and self.current_aspect_ratio > 0:
-            new_height = value / self.current_aspect_ratio
-            spin_height.setValue(new_height)
-        self._updating_spins = False
+
+        # 锁定状态下同步高度，并传入新宽度值
+        if self.control_panel.lock_btn.isChecked():
+            self._update_height_from_width(value)
+
+        # 最终应用尺寸
+        self.apply_contour_size()
 
     def on_spin_height_changed(self, value):
-        """高度变化时，按比例更新宽度"""
         if self._updating_spins or not self.canvas.selected_contour:
             return
-        self._updating_spins = True
-        spin_width = self.findChild(QDoubleSpinBox, "spin_width")
-        if spin_width and self.current_aspect_ratio > 0:
-            new_width = value * self.current_aspect_ratio
-            spin_width.setValue(new_width)
-        self._updating_spins = False
+        self.apply_contour_size()
+
+    def on_aspect_lock_changed(self, locked):
+        if not self.canvas.selected_contour:
+            return
+        if locked:
+            self._update_height_from_width()
+            self.apply_contour_size()
+        else:
+            self.control_panel.spin_height.setEnabled(True)
+            self.apply_contour_size()
 
     def apply_contour_size(self):
-        """应用轮廓尺寸"""
         if not self.canvas.selected_contour:
             QMessageBox.warning(self, "警告", "请先选中一个轮廓！")
             return
 
-        # 找到尺寸输入框
-        spin_width = self.findChild(QDoubleSpinBox, "spin_width")
-        spin_height = self.findChild(QDoubleSpinBox, "spin_height")
+        contour = self.canvas.selected_contour
+        spin_width = self.control_panel.spin_width
+        spin_height = self.control_panel.spin_height
 
         if not spin_width or not spin_height:
             return
@@ -916,13 +917,41 @@ class MainWindow(QMainWindow):
         width_cm = spin_width.value()
         height_cm = spin_height.value()
 
-        self.canvas.selected_contour.set_size(width_cm, height_cm, self.canvas.pixels_per_cm)
+        # 获取轮廓原始包围盒像素尺寸
+        bbox = contour.bounding_box
+        if bbox.width() <= 0 or bbox.height() <= 0:
+            return
+
+        # 根据锁定状态决定缩放方式
+        if self.control_panel.lock_btn.isChecked():
+            # 锁定模式：按宽度等比例缩放
+            target_width_px = width_cm * self.canvas.pixels_per_cm
+            scale = target_width_px / bbox.width()
+            # 计算新的高度（用于更新输入框）
+            new_height_px = bbox.height() * scale
+            new_height_cm = new_height_px / self.canvas.pixels_per_cm
+            # 更新高度输入框（不触发信号）
+            self._updating_spins = True
+            spin_height.blockSignals(True)
+            spin_height.setValue(new_height_cm)
+            spin_height.blockSignals(False)
+            self._updating_spins = False
+            # 关键修改：同时设置 scale_x 和 scale_y
+            contour.scale_x = scale
+            contour.scale_y = scale
+            contour.scale = scale  # 保持兼容
+            # 更新实际尺寸记录
+            contour.actual_width_cm = width_cm
+            contour.actual_height_cm = new_height_cm
+        else:
+            # 非锁定模式：使用 set_size 方法（允许拉伸）
+            contour.set_size(width_cm, height_cm, self.canvas.pixels_per_cm)
 
         # 更新标号大小
-        self.canvas.selected_contour.update_label_size(self.canvas.pixels_per_cm)
+        contour.update_label_size(self.canvas.pixels_per_cm)
 
         self.canvas.update()
-        self.statusBar().showMessage(f"已设置轮廓尺寸: {width_cm}cm × {height_cm}cm")
+        self.statusBar().showMessage(f"已设置轮廓尺寸: {width_cm:.2f}cm × {height_cm:.2f}cm")
 
     # def on_contour_list_item_clicked(self, item):
     #     """轮廓列表项点击"""
