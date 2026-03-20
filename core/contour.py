@@ -16,7 +16,9 @@ class Contour:
         self.original_points = points  # 原始轮廓点
         self.nurbs_points = []  # NURBS曲线点
         self.position = QPointF(0, 0)  # 轮廓位置
-        self.scale = 1.0  # 缩放比例
+        self.scale = 1.0  # 保留，兼容旧代码
+        self.scale_x = 1.0  # x 方向缩放
+        self.scale_y = 1.0  # y 方向缩放
         self.is_selected = False
         self.source_image = source_image  # 来源图像
         self.bounding_box = QRectF()  # 包围盒
@@ -34,6 +36,7 @@ class Contour:
         self.control_points = 50  # 默认控制点数
         # 计算初始包围盒
         self.calculate_bounding_box()
+
 
     def calculate_bounding_box(self):
         """计算轮廓的包围盒"""
@@ -66,36 +69,26 @@ class Contour:
         return colors[idx % len(colors)]
 
     def get_display_rect(self):
-        """获取显示时的矩形（考虑缩放和位置）"""
         if self.bounding_box.isNull():
             return QRectF()
-
-        width = self.bounding_box.width() * self.scale
-        height = self.bounding_box.height() * self.scale
-
-        # 计算中心点位置
+        width = self.bounding_box.width() * self.scale_x
+        height = self.bounding_box.height() * self.scale_y
         center_x = self.position.x() + width / 2
         center_y = self.position.y() + height / 2
-
-        # 返回以中心点为基准的矩形
         return QRectF(center_x - width / 2, center_y - height / 2, width, height)
 
     def get_geometric_center(self) -> QPointF:
-        """计算轮廓的几何中心（基于NURBS点的平均值）"""
         if not self.nurbs_points:
             return QPointF(0, 0)
-        # 计算局部坐标的平均值
         sum_x = sum(p.x() for p in self.nurbs_points)
         sum_y = sum(p.y() for p in self.nurbs_points)
         n = len(self.nurbs_points)
         local_center = QPointF(sum_x / n, sum_y / n)
-        # 转换为显示坐标
         display_rect = self.get_display_rect()
         if display_rect.isNull():
             return QPointF(0, 0)
         bbox_tl = self.bounding_box.topLeft()
         scale = self.scale
-        # 显示坐标 = 显示矩形左上角 + (局部点 - 包围盒左上角) * scale
         display_x = display_rect.left() + (local_center.x() - bbox_tl.x()) * scale
         display_y = display_rect.top() + (local_center.y() - bbox_tl.y()) * scale
         return QPointF(display_x, display_y)
@@ -116,10 +109,9 @@ class Contour:
             return None, 0
 
         # 计算局部像素中的字体宽度和最小尺寸阈值
-        # 显示像素中的字体大小 = font_size_mm * (pixels_per_cm / 10)
-        # 局部像素大小 = 显示像素大小 / scale
-        font_size_local = font_size_mm * (pixels_per_cm / 10) / self.scale
-        min_size_local = min_size_mm * (pixels_per_cm / 10) / self.scale
+        min_scale = min(self.scale_x, self.scale_y)
+        font_size_local = font_size_mm * (pixels_per_cm / 10) / min_scale
+        min_size_local = min_size_mm * (pixels_per_cm / 10) / min_scale
 
         # 如果轮廓包围盒尺寸过小，直接返回
         bbox_width = self.bounding_box.width()
@@ -146,7 +138,6 @@ class Contour:
                 p2 = pts[(j + 1) % len(pts)]
                 if (p1[0] <= x <= p2[0]) or (p2[0] <= x <= p1[0]):
                     if p1[0] == p2[0]:
-                        # 垂直线段，跳过或取中点？此处忽略以避免无穷多交点
                         continue
                     t = (x - p1[0]) / (p2[0] - p1[0])
                     y = p1[1] + t * (p2[1] - p1[1])
@@ -191,11 +182,11 @@ class Contour:
                                         if score > best_score:
                                             best_score = score
                                             best_vertical_dist = dist_y
-                                            # 将局部点转换为显示坐标
+                                            # 将局部点转换为显示坐标，使用 scale_x 和 scale_y 分别转换
                                             display_rect = self.get_display_rect()
                                             bbox_tl = self.bounding_box.topLeft()
-                                            display_x = display_rect.left() + (x - bbox_tl.x()) * self.scale
-                                            display_y = display_rect.top() + (y_mid - bbox_tl.y()) * self.scale
+                                            display_x = display_rect.left() + (x - bbox_tl.x()) * self.scale_x
+                                            display_y = display_rect.top() + (y_mid - bbox_tl.y()) * self.scale_y
                                             best_point = QPointF(display_x, display_y)
                                         break  # 只取包含 x 的那个区间
             x += step
@@ -219,19 +210,19 @@ class Contour:
     #         self.actual_width_cm = width_cm
     #         self.actual_height_cm = height_cm
     def set_size(self, width_cm: float, height_cm: float, pixels_per_cm: float, pixel_scale_mm_per_px: float = None):
-        """设置轮廓尺寸和比例尺"""
+        """设置轮廓尺寸和比例尺，支持非均匀缩放"""
         if self.bounding_box.width() > 0 and self.bounding_box.height() > 0:
             width_px = width_cm * pixels_per_cm
             height_px = height_cm * pixels_per_cm
+            self.scale_x = width_px / self.bounding_box.width()
+            self.scale_y = height_px / self.bounding_box.height()
+            # 兼容旧代码：scale 设为平均值
+            self.scale = (self.scale_x + self.scale_y) / 2.0
 
-            scale_x = width_px / self.bounding_box.width()
-            scale_y = height_px / self.bounding_box.height()
-            self.scale = min(scale_x, scale_y)
-
-            # 存储实际尺寸和比例尺
             self.actual_width_cm = width_cm
             self.actual_height_cm = height_cm
             self.pixel_scale_mm_per_px = pixel_scale_mm_per_px
+
 
     def update_label_size(self, pixels_per_cm: float):
         """更新标号大小"""
