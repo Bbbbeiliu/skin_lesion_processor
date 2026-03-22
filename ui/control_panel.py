@@ -251,7 +251,9 @@ class ControlPanel(QWidget):
 
         btn_arrange = QPushButton("📐 自动排列轮廓")
         btn_arrange.setObjectName("btn_arrange")
-        btn_arrange.clicked.connect(self.main_window.rearrange_current_page)
+        # btn_arrange.clicked.connect(self.main_window.rearrange_current_page)
+        # btn_arrange.clicked.connect(lambda: self.main_window.rearrange_current_page(1.0))
+        btn_arrange.clicked.connect(self.main_window.rearrange_process)
         contour_layout.addWidget(btn_arrange)
 
 

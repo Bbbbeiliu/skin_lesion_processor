@@ -511,6 +511,7 @@ class MainWindow(QMainWindow):
                 minx, miny, maxx, maxy = poly.bounds
                 if (maxx - cx) ** 2 + (maxy - cy) ** 2 > radius ** 2:
                     return False
+                # 逐个检查多边形外环上的每个顶点
                 for x, y in poly.exterior.coords:
                     if (x - cx) ** 2 + (y - cy) ** 2 > radius ** 2:
                         return False
@@ -523,7 +524,7 @@ class MainWindow(QMainWindow):
                 poly_height = poly_bounds[3] - poly_bounds[1]
                 max_dim = max(poly_width, poly_height)
 
-                # 合并已放置区域的禁止多边形
+                # 合并已放置区域的所有带间距多边形，形成联合多边形，表示禁止区域
                 if placed_items:
                     placed_union = unary_union([item['poly_with_margin'] for item in placed_items])
                     placed_prep = prepared.prep(placed_union)
@@ -620,6 +621,12 @@ class MainWindow(QMainWindow):
         except ImportError:
             QMessageBox.critical(self, "缺少依赖", "请安装shapely库：pip install shapely")
             return
+        # 防御：如果 margin_mm 不是数值（如 bool），则使用默认值
+        # if not isinstance(margin_mm, (int, float)):
+        print(f"margin_mm: = {margin_mm}")
+        # if not isinstance(margin_mm, (int, float)):
+        #     print(f"margin_mm不是int或float")
+        # margin_mm = 1.0
 
         # 如果尚未分页，回退到全局排样
         if not hasattr(self, 'pages_contours') or not self.pages_contours:
@@ -637,6 +644,8 @@ class MainWindow(QMainWindow):
         center_x = self.canvas.canvas_width_px / 2
         center_y = self.canvas.canvas_height_px / 2
         margin_px = margin_mm * (pixels_per_cm / 10)
+        # print(f"rearrange: pixels_per_cm = {self.canvas.pixels_per_cm}, margin_mm = {margin_mm}")
+        # print(f"margin_px = {margin_px}")
 
         # 辅助函数：尝试在容器内放置多边形
         def try_place(poly, placed_items):
@@ -843,6 +852,10 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.lbl_page.setText(f"第 {current_idx + 1} 页 / 共 {len(self.pages_contours)} 页")
         self.statusBar().showMessage(f"当前页重排完成，溢出轮廓已移至最后页处理")
+
+    def rearrange_process(self):
+        """重排当前页轮廓的包装函数，用于按钮信号连接，确保间距参数正确传递"""
+        self.rearrange_current_page(1.0)
 
     def clear_contours(self):
         """清空所有轮廓"""
