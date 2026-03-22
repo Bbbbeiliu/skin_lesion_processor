@@ -120,6 +120,7 @@ class CloudDataManager:
                     save_dir.mkdir(exist_ok=True)
                     save_path = save_dir / filename
 
+                print(f"[DEBUG] 正在下载: {fid} -> {save_path}")  # 为了调试添加这行
                 self._download_file(download_url, save_path)
                 if progress_callback:
                     progress_callback(f"已下载: {name}/{file_type}/{filename}")
