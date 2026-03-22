@@ -22,7 +22,8 @@ class Contour:
         self.is_selected = False
         self.source_image = source_image  # 来源图像
         self.bounding_box = QRectF()  # 包围盒
-        self.color = self.generate_color(contour_id)
+        # self.color = self.generate_color(contour_id) # 基于轮廓id分配颜色
+        self.color = self.generate_color(label if label > 0 else contour_id)  # 优先用标号
         self.label = label  # 添加：轮廓标号
         self.label_text = str(label) if label > 0 else ""  # 添加：标号文本
         self.label_font_size = 12  # 添加：标号字体大小
