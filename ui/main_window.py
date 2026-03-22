@@ -1064,6 +1064,16 @@ class MainWindow(QMainWindow):
             if locked:
                 self._update_height_from_width()
             self._updating_spins = False
+
+            # 同步控制点滑块和数值框
+            control_points = getattr(contour, 'control_points', 120)  # 默认120
+            # 阻塞信号，避免触发重新拟合
+            self.control_panel.slider_control_points.blockSignals(True)
+            self.control_panel.spin_control_points.blockSignals(True)
+            self.control_panel.slider_control_points.setValue(control_points)
+            self.control_panel.spin_control_points.setValue(control_points)
+            self.control_panel.slider_control_points.blockSignals(False)
+            self.control_panel.spin_control_points.blockSignals(False)
         else:
             self.control_panel.selection_group.setEnabled(False)
             self.control_panel.lbl_selected_info.setText("未选中轮廓")
