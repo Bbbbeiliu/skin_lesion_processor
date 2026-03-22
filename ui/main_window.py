@@ -9,6 +9,7 @@ import random
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import cv2
 import numpy as np
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QPushButton, QLabel, QSlider, QSpinBox, QDoubleSpinBox,
@@ -272,8 +273,8 @@ class MainWindow(QMainWindow):
         new_contours = []
         has_processed = False
         for image_path in image_files:
+            print(f"[DEBUG] 正在处理图像: {image_path}")  # 为了调试添加这行
             image_name = Path(image_path).name
-
             # 检查是否已存在该图像
             existing_label = None
             for label, img in self.label_to_image_map.items():
@@ -300,7 +301,8 @@ class MainWindow(QMainWindow):
                 self.label_metadata[label] = {
                     "source": source,
                     "created": QDateTime.currentDateTime(),
-                    "deleted": False
+                    "deleted": False,
+                    "image_path": image_path  # 完整路径
                 }
                 has_processed = True
             else:
@@ -311,7 +313,8 @@ class MainWindow(QMainWindow):
                 self.label_metadata[label] = {
                     "source": source,
                     "created": QDateTime.currentDateTime(),
-                    "deleted": False
+                    "deleted": False,
+                    "image_path": image_path  # 完整路径
                 }
                 has_processed = True
 
@@ -570,7 +573,8 @@ class MainWindow(QMainWindow):
                 self.label_metadata[label] = {
                     "source": source,
                     "created": QDateTime.currentDateTime(),
-                    "deleted": False
+                    "deleted": False,
+                    "image_path": image_path   # 完整路径
                 }
 
                 for contour_points, _ in contours_data:
@@ -1116,7 +1120,6 @@ class MainWindow(QMainWindow):
         self.process_all_images(source="cloud")  # 标记云端来源
 
     def on_download_add(self):
-        """下载选中患者并添加到当前项目"""
         selected_items = self.patient_list.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "警告", "请至少选择一个患者")
@@ -1136,9 +1139,14 @@ class MainWindow(QMainWindow):
         self.download_worker.finished.connect(self.on_download_add_finished)
         self.download_worker.error.connect(self.on_download_error)
         self.download_thread.started.connect(self.download_worker.run)
-        self.download_thread.finished.connect(self.download_thread.deleteLater)
 
-        self.progress_dialog = QProgressDialog("正在下载患者数据...", "取消", 0, 100, self)
+        # 关键修改：确保线程先退出再销毁
+        self.download_worker.finished.connect(self.download_thread.quit)
+        self.download_thread.finished.connect(self.download_thread.deleteLater)
+        self.download_thread.finished.connect(self.download_worker.deleteLater)
+        self.download_worker.error.connect(self.download_thread.quit)
+
+        self.progress_dialog = QProgressDialog("正在下载患者数据...", "取消", 0, 0, self)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.canceled.connect(self.download_worker.cancel)
 
@@ -1153,7 +1161,11 @@ class MainWindow(QMainWindow):
             return
 
         self.overlay_map.update(overlay_map)
-        self.add_images_and_process(mask_files)  # 调用添加方法
+        self.add_images_and_process(mask_files, source="cloud")  # 显示调用标记来源
+        # 强制释放内存和OpenCV资源
+        import gc
+        gc.collect()
+        cv2.destroyAllWindows()
 
     def apply_contour_size(self):
         if not self.canvas.selected_contour:
@@ -1646,7 +1658,7 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def _calibrate_with_map(self):
-        """使用 overlay_map 进行标定"""
+        """使用 overlay_map 进行标定，若不存在则回退到本地查找"""
         detector = WhiteBallMarkerDetector(ball_diameter_mm=10)
         progress = QProgressDialog("自动标定中...", "取消", 0, len(self.canvas.contours), self)
         progress.setWindowTitle("自动标定")
@@ -1661,11 +1673,39 @@ class MainWindow(QMainWindow):
                 break
 
             source_image = contour.source_image
-            if source_image not in self.overlay_map:
-                continue
+            # 优先使用 overlay_map
+            if source_image in self.overlay_map:
+                overlay_path = self.overlay_map[source_image]
+            else:
+                # 回退到本地查找（原有的自动标定逻辑）
+                if not self.current_overlay_dir and self.image_files:
+                    mask_dir = Path(self.image_files[0]).parent
+                    overlay_dir = mask_dir.parent / "overlays"
+                    if overlay_dir.exists():
+                        self.current_overlay_dir = str(overlay_dir)
+                if not self.current_overlay_dir:
+                    continue
 
-            overlay_path = self.overlay_map[source_image]
-            result = detector.process_single_image(overlay_path, None)
+                # 构建 overlay 文件名
+                if '_mask' in source_image:
+                    overlay_filename = source_image.replace('_mask', '_overlay')
+                else:
+                    base_name = Path(source_image).stem
+                    overlay_filename = f"{base_name}_overlay.png"
+
+                overlay_path = Path(self.current_overlay_dir) / overlay_filename
+                if not overlay_path.exists():
+                    # 尝试其他扩展名
+                    for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                        alt_path = Path(self.current_overlay_dir) / f"{Path(overlay_filename).stem}{ext}"
+                        if alt_path.exists():
+                            overlay_path = alt_path
+                            break
+                    else:
+                        continue  # 未找到对应文件
+
+            # 使用检测器处理
+            result = detector.process_single_image(str(overlay_path), None)
             if result and result['detected'] and result['pixel_scale']:
                 pixel_scale = result['pixel_scale']
                 orig_w = contour.bounding_box.width()
@@ -2049,10 +2089,16 @@ class MainWindow(QMainWindow):
         self.download_worker.progress.connect(self.on_download_progress)
         self.download_worker.finished.connect(self.on_download_finished)
         self.download_worker.error.connect(self.on_download_error)
-        self.download_thread.started.connect(self.download_worker.run)
+
+        # 线程生命周期管理（确保线程正确退出后再销毁）
+        self.download_worker.finished.connect(self.download_thread.quit)
+        self.download_worker.error.connect(self.download_thread.quit)
+        self.download_thread.finished.connect(self.download_worker.deleteLater)
         self.download_thread.finished.connect(self.download_thread.deleteLater)
 
-        self.progress_dialog = QProgressDialog("正在下载患者数据...", "取消", 0, 100, self)
+        self.download_thread.started.connect(self.download_worker.run)
+
+        self.progress_dialog = QProgressDialog("正在下载患者数据...", "取消", 0, 0, self)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.canceled.connect(self.download_worker.cancel)
 
@@ -2071,7 +2117,12 @@ class MainWindow(QMainWindow):
 
         self.overlay_map = overlay_map
         self.image_files = mask_files
-        self.process_all_images()  # 调用现有处理函数
+        self.process_all_images(source="cloud")  # 明确指定云端来源
+
+        # 强制释放内存和OpenCV资源
+        import gc
+        gc.collect()
+        cv2.destroyAllWindows()
 
     def on_download_error(self, err_msg):
         self.progress_dialog.close()

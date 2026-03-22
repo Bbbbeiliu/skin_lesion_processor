@@ -125,6 +125,9 @@ class LabelMappingDialog(QDialog):
 
             # 完整路径（这里只显示文件名，因为原路径可能不完整）
             path_item = QTableWidgetItem(f"来自: {image_name}")
+            # 完整路径（从元数据获取实际路径）
+            full_path = metadata.get("image_path", "")
+            path_item = QTableWidgetItem(f'来自: {full_path if full_path else "未知路径"}')
             self.table_widget.setItem(row, 3, path_item)
 
             # 云端/本地
