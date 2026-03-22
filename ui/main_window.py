@@ -1043,13 +1043,18 @@ class MainWindow(QMainWindow):
     def clear_contours(self):
         """清空所有轮廓"""
         self.canvas.clear()
-        # 使用 control_panel 中的 selection_group 和 lbl_selected_info
         self.control_panel.selection_group.setEnabled(False)
         self.control_panel.lbl_selected_info.setText("未选中轮廓")
 
         self.label_to_image_map.clear()
         self.canvas.label_to_image_mapping.clear()
         self.next_label = 1
+
+        # 清空分页数据
+        self.pages_contours = []
+        self.current_page = 0
+        self.lbl_page.setText("第 0 页 / 共 0 页")
+
         self.statusBar().showMessage("已清空所有轮廓")
 
     def on_contour_selected(self, contour):
