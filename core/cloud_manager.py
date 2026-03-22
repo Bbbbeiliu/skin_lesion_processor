@@ -3,7 +3,7 @@ import json
 import requests
 from pathlib import Path
 from typing import List, Dict, Optional, Callable
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class CloudDataManager:
     def __init__(self, app_id: str, app_secret: str, env_id: str, workspace_root: str = "workspace"):
@@ -73,65 +73,71 @@ class CloudDataManager:
         return sorted(patients)
 
     def download_patients(self, patient_names: List[str], progress_callback: Optional[Callable] = None) -> tuple:
-        """
-        下载多个患者的所有文件，返回 (mask_files_list, overlay_map)
-        - mask_files_list: 所有 mask 文件的完整路径列表
-        - overlay_map: 字典 {mask_filename: overlay_full_path}
-        """
         mask_files = []
         overlay_map = {}
 
-        for name in patient_names:
-            # 创建患者目录
-            patient_dir = self.workspace_root / name
-            mask_dir = patient_dir / "mask"
-            overlay_dir = patient_dir / "overlay"
-            mask_dir.mkdir(parents=True, exist_ok=True)
-            overlay_dir.mkdir(parents=True, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = []
+            for name in patient_names:
+                future = executor.submit(self._download_patient, name, progress_callback)
+                futures.append(future)
 
-            # 查询该患者记录
-            records = self._query_patient_records(name)
-            file_items = self._collect_file_items(records)
+            for future in as_completed(futures):
+                mf, om = future.result()
+                mask_files.extend(mf)
+                overlay_map.update(om)
 
-            # 获取下载链接
-            file_ids = [item["fileid"] for item in file_items]
-            url_items = self._get_download_urls(file_ids)
-            url_map = {item["fileid"]: item for item in url_items}
+        return mask_files, overlay_map
 
-            for item in file_items:
-                fid = item["fileid"]
-                file_type = item["type"]
-                url_info = url_map.get(fid)
-                if not url_info or url_info.get("status", -1) != 0:
-                    continue
-                download_url = url_info.get("download_url")
-                if not download_url:
-                    continue
+    def _download_patient(self, name: str, progress_callback: Optional[Callable]) -> tuple:
+        """下载单个患者的所有文件"""
+        patient_dir = self.workspace_root / name
+        mask_dir = patient_dir / "mask"
+        overlay_dir = patient_dir / "overlay"
+        mask_dir.mkdir(parents=True, exist_ok=True)
+        overlay_dir.mkdir(parents=True, exist_ok=True)
 
-                filename = fid.split("/")[-1]
-                if file_type == "mask":
-                    save_path = mask_dir / filename
-                    mask_files.append(str(save_path))
-                elif file_type == "overlay":
-                    save_path = overlay_dir / filename
-                else:
-                    # image 等可放在其他子目录
-                    save_dir = patient_dir / file_type
-                    save_dir.mkdir(exist_ok=True)
-                    save_path = save_dir / filename
+        records = self._query_patient_records(name)
+        file_items = self._collect_file_items(records)
 
-                print(f"[DEBUG] 正在下载: {fid} -> {save_path}")  # 为了调试添加这行
-                self._download_file(download_url, save_path)
-                if progress_callback:
-                    progress_callback(f"已下载: {name}/{file_type}/{filename}")
+        file_ids = [item["fileid"] for item in file_items]
+        url_items = self._get_download_urls(file_ids)
+        url_map = {item["fileid"]: item for item in url_items}
 
-            # 构建 overlay 映射（假设 mask 和 overlay 文件名对应）
-            for mask_path in mask_dir.glob("*_mask.png"):
-                mask_filename = mask_path.name
-                overlay_filename = mask_filename.replace("_mask", "_overlay")
-                overlay_path = overlay_dir / overlay_filename
-                if overlay_path.exists():
-                    overlay_map[mask_filename] = str(overlay_path)
+        mask_files = []
+        for item in file_items:
+            fid = item["fileid"]
+            file_type = item["type"]
+            url_info = url_map.get(fid)
+            if not url_info or url_info.get("status", -1) != 0:
+                continue
+            download_url = url_info.get("download_url")
+            if not download_url:
+                continue
+
+            filename = fid.split("/")[-1]
+            if file_type == "mask":
+                save_path = mask_dir / filename
+                mask_files.append(str(save_path))
+            elif file_type == "overlay":
+                save_path = overlay_dir / filename
+            else:
+                save_dir = patient_dir / file_type
+                save_dir.mkdir(exist_ok=True)
+                save_path = save_dir / filename
+
+            self._download_file(download_url, save_path)
+            if progress_callback:
+                progress_callback(f"已下载: {name}/{file_type}/{filename}")
+
+        # 构建 overlay 映射
+        overlay_map = {}
+        for mask_path in mask_dir.glob("*_mask.png"):
+            mask_filename = mask_path.name
+            overlay_filename = mask_filename.replace("_mask", "_overlay")
+            overlay_path = overlay_dir / overlay_filename
+            if overlay_path.exists():
+                overlay_map[mask_filename] = str(overlay_path)
 
         return mask_files, overlay_map
 
