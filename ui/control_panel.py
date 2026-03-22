@@ -249,13 +249,21 @@ class ControlPanel(QWidget):
         btn_clear.clicked.connect(self.main_window.clear_contours)
         contour_layout.addWidget(btn_clear)
 
+        # 在 contour_group 中添加
+        btn_add = QPushButton("➕ 添加轮廓")
+        btn_add.clicked.connect(self.main_window.add_contours)
+        contour_layout.addWidget(btn_add)
+
+        btn_delete = QPushButton("🗑️ 删除轮廓")
+        btn_delete.clicked.connect(self.main_window.delete_selected_contour)
+        contour_layout.addWidget(btn_delete)
+
         btn_arrange = QPushButton("📐 自动排列轮廓")
         btn_arrange.setObjectName("btn_arrange")
         # btn_arrange.clicked.connect(self.main_window.rearrange_current_page)
         # btn_arrange.clicked.connect(lambda: self.main_window.rearrange_current_page(1.0))
         btn_arrange.clicked.connect(self.main_window.rearrange_process)
         contour_layout.addWidget(btn_arrange)
-
 
         # 只保留保存按钮，移除加载按钮
         btn_save = QPushButton("💾 保存轮廓")
