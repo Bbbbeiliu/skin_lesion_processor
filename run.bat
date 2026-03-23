@@ -1,0 +1,6 @@
+@echo off
+echo 正在启动激光加工自动控制系统...
+cd /d %~dp0resources\auto_marker
+..\python32\python.exe auto_marker.py
+echo 程序已退出，按任意键关闭窗口...
+pause > nul
