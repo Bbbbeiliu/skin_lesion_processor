@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGr
                              QPushButton, QLabel, QSlider, QSpinBox, QDoubleSpinBox,
                              QCheckBox, QListWidget, QListWidgetItem, QProgressDialog,
                              QFileDialog, QMessageBox, QFormLayout, QMenuBar, QAction,
-                             QProgressBar, QApplication, QProgressBar, QRadioButton, QDockWidget)
+                             QProgressBar, QApplication, QProgressBar, QRadioButton, QDockWidget, QLineEdit)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QDateTime, QPointF, QRectF, pyqtSlot, QMetaObject, Q_ARG, QObject, QThread
 from PyQt5.QtGui import QPalette, QColor
 
@@ -77,6 +77,8 @@ class MainWindow(QMainWindow):
         self.label_metadata: Dict[int, dict] = {}  # 标号元数据
         self.next_label = 1  # 添加：下一个标号
         self.next_contour_id = 0  # 全局唯一轮廓ID计数器
+        self.pages_contours = []  # 分页后的轮廓列表
+        self.current_page = 0  # 当前显示的页码
         # self.current_precision = 0.5  # 当前拟合精度
         # self.refit_timer = QTimer()  # 用于延迟重新拟合的定时器
         # self.refit_timer.setSingleShot(True)
@@ -331,6 +333,29 @@ class MainWindow(QMainWindow):
 
         return new_contours, has_processed
 
+    def _send_single_dxf(self, dxf_path: str, params: dict = None):
+        """发送单个 DXF 文件（内部使用）"""
+        remote_url = self.remote_url_edit.text().strip()
+        if not remote_url:
+            QMessageBox.warning(self, "警告", "请输入远程地址！")
+            return
+
+        # 发送
+        self.btn_send_remote.setEnabled(False)
+        self.statusBar().showMessage("正在发送文件...")
+        QApplication.processEvents()
+
+        try:
+            success, result = self.laser.send_dxf_via_http(dxf_path, remote_url, params)
+            if success:
+                QMessageBox.information(self, "成功", f"文件已发送！\n响应：{result}")
+                self.statusBar().showMessage("文件发送成功")
+            else:
+                QMessageBox.critical(self, "错误", f"发送失败：{result}")
+                self.statusBar().showMessage("发送失败")
+        finally:
+            self.btn_send_remote.setEnabled(True)
+
     def _update_height_from_width(self, new_width_cm=None):
         """锁定状态下，根据当前宽度按原始比例更新高度输入框（不触发应用尺寸）"""
         if not self.canvas.selected_contour:
@@ -379,6 +404,13 @@ class MainWindow(QMainWindow):
         spin_width.setValue(new_width_cm)
         spin_width.blockSignals(False)
         self._updating_spins = False
+
+    def _update_remote_page_info(self):
+        """更新远程发送区域的页数显示"""
+        if hasattr(self, 'page_count_label'):
+            self.page_count_label.setText(f"（共 {len(self.pages_contours)} 页）")
+            # 同时更新占位符提示，让用户知道当前总页数
+            self.page_range_edit.setPlaceholderText(f"例如 1 或 1-{len(self.pages_contours)}")
 
     def add_contours(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -793,6 +825,8 @@ class MainWindow(QMainWindow):
         finally:
             # 无论成功或异常，关闭进度对话框
             progress.close()
+        # 添加下面这行
+        self._update_remote_page_info()
 
     def rearrange_current_page(self, margin_mm=1.0):
         """仅对当前页的轮廓进行极坐标重新排列，放不下的轮廓与最后一页合并重排"""
@@ -1035,6 +1069,7 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.lbl_page.setText(f"第 {current_idx + 1} 页 / 共 {len(self.pages_contours)} 页")
         self.statusBar().showMessage(f"当前页重排完成，溢出轮廓已移至最后页处理")
+        self._update_remote_page_info()
 
     def rearrange_process(self):
         """重排当前页轮廓的包装函数，用于按钮信号连接，确保间距参数正确传递"""
@@ -1112,17 +1147,6 @@ class MainWindow(QMainWindow):
         else:
             self.control_panel.spin_height.setEnabled(True)
             self.apply_contour_size()
-
-    def on_download_finished(self, result):
-        self.progress_dialog.close()
-        mask_files, overlay_map = result
-        if not mask_files:
-            QMessageBox.information(self, "提示", "没有下载到任何mask文件")
-            return
-
-        self.overlay_map = overlay_map
-        self.image_files = mask_files
-        self.process_all_images(source="cloud")  # 标记云端来源
 
     def on_download_add(self):
         selected_items = self.patient_list.selectedItems()
@@ -1767,79 +1791,154 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("视图已重置")
 
     def init_laser_control_panel(self):
-        """初始化激光控制面板"""
-        # 创建激光控制面板（可放在工具栏或侧边栏）
+        """初始化激光控制面板（包含远程发送功能）"""
+        # 原有激光控制面板
         laser_panel = QWidget()
         layout = QVBoxLayout()
 
-        # 模式选择
+        # ---- 工作模式 ----
         mode_group = QGroupBox("工作模式")
         mode_layout = QHBoxLayout()
-
         self.sim_radio = QRadioButton("模拟模式")
         self.hardware_radio = QRadioButton("硬件模式")
-
-        # 根据当前模式设置单选按钮
         if self.laser.simulation_mode:
             self.sim_radio.setChecked(True)
         else:
             self.hardware_radio.setChecked(True)
-
         self.sim_radio.toggled.connect(self.on_mode_changed)
         self.hardware_radio.toggled.connect(self.on_mode_changed)
-
         mode_layout.addWidget(self.sim_radio)
         mode_layout.addWidget(self.hardware_radio)
         mode_group.setLayout(mode_layout)
 
-        # 状态显示
+        # ---- 系统状态 ----
         status_group = QGroupBox("系统状态")
         status_layout = QVBoxLayout()
-
         self.mode_label = QLabel("模式: 模拟")
         self.hardware_label = QLabel("硬件: 未连接")
         self.status_label = QLabel("状态: 就绪")
-
         status_layout.addWidget(self.mode_label)
         status_layout.addWidget(self.hardware_label)
         status_layout.addWidget(self.status_label)
         status_group.setLayout(status_layout)
 
-        # 控制按钮
+        # ---- 控制按钮 ----
         btn_layout = QHBoxLayout()
-
         self.test_btn = QPushButton("测试连接")
         self.test_btn.clicked.connect(self.test_hardware_connection)
-
         self.cut_btn = QPushButton("执行激光切割")
         self.cut_btn.clicked.connect(self.execute_laser_cutting)
         self.cut_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
-
         self.stop_btn = QPushButton("停止")
         self.stop_btn.clicked.connect(self.stop_cutting)
         self.stop_btn.setEnabled(False)
-
         btn_layout.addWidget(self.test_btn)
         btn_layout.addWidget(self.cut_btn)
         btn_layout.addWidget(self.stop_btn)
 
-        # 添加到主布局
         layout.addWidget(mode_group)
         layout.addWidget(status_group)
         layout.addLayout(btn_layout)
-        layout.addStretch()
+
+        # ========== 新增：远程发送区域 ==========
+        remote_group = QGroupBox("远程发送到切割机")
+        remote_layout = QVBoxLayout()
+
+        # 远程地址
+        url_layout = QHBoxLayout()
+        url_layout.addWidget(QLabel("远程地址:"))
+        self.remote_url_edit = QLineEdit("http://127.0.0.1:5000/submit")
+        url_layout.addWidget(self.remote_url_edit)
+        remote_layout.addLayout(url_layout)
+
+        # 来源选择
+        source_group = QGroupBox("发送来源")
+        source_layout = QVBoxLayout()
+        self.radio_local = QRadioButton("本地 DXF 文件")
+        self.radio_pages = QRadioButton("当前画布页面")
+        self.radio_local.setChecked(True)
+        source_layout.addWidget(self.radio_local)
+        source_layout.addWidget(self.radio_pages)
+        source_group.setLayout(source_layout)
+        remote_layout.addWidget(source_group)
+
+        # 本地文件选择
+        local_widget = QWidget()
+        local_layout = QHBoxLayout(local_widget)
+        local_layout.setContentsMargins(0, 0, 0, 0)
+        self.local_file_path = QLineEdit()
+        self.local_file_path.setPlaceholderText("请选择 DXF 文件")
+        local_layout.addWidget(self.local_file_path)
+        self.btn_browse_local = QPushButton("浏览...")
+        self.btn_browse_local.clicked.connect(self.browse_local_dxf)
+        local_layout.addWidget(self.btn_browse_local)
+        remote_layout.addWidget(local_widget)
+
+        # 画布页面选择（默认隐藏）
+        pages_widget = QWidget()
+        pages_layout = QHBoxLayout(pages_widget)
+        pages_layout.setContentsMargins(0, 0, 0, 0)
+        pages_layout.addWidget(QLabel("页码范围:"))
+        self.page_range_edit = QLineEdit()
+        self.page_range_edit.setPlaceholderText(f"例如 1 或 1-3")
+        pages_layout.addWidget(self.page_range_edit)
+        self.page_count_label = QLabel(f"（共 {len(self.pages_contours)} 页）")
+        pages_layout.addWidget(self.page_count_label)
+        remote_layout.addWidget(pages_widget)
+        pages_widget.setVisible(False)
+
+        # 模板选项（可折叠）
+        self.template_check = QCheckBox("使用模板")
+        remote_layout.addWidget(self.template_check)
+
+        template_widget = QWidget()
+        template_layout = QVBoxLayout(template_widget)
+        template_layout.setContentsMargins(20, 0, 0, 0)
+
+        # 模板路径
+        template_path_layout = QHBoxLayout()
+        template_path_layout.addWidget(QLabel("模板文件:"))
+        self.template_path_edit = QLineEdit()
+        template_path_layout.addWidget(self.template_path_edit)
+        self.btn_browse_template = QPushButton("浏览...")
+        self.btn_browse_template.clicked.connect(self.browse_template_file)
+        template_path_layout.addWidget(self.btn_browse_template)
+        template_layout.addLayout(template_path_layout)
+
+        # 占位符名称
+        placeholder_layout = QHBoxLayout()
+        placeholder_layout.addWidget(QLabel("占位符名称:"))
+        self.placeholder_edit = QLineEdit("PLACEHOLDER")
+        placeholder_layout.addWidget(self.placeholder_edit)
+        template_layout.addLayout(placeholder_layout)
+
+        remote_layout.addWidget(template_widget)
+        template_widget.setVisible(False)
+
+        # 发送按钮
+        self.btn_send_remote = QPushButton("发送到远程切割机")
+        self.btn_send_remote.clicked.connect(self.send_dxf_to_remote)
+        self.btn_send_remote.setStyleSheet(
+            "QPushButton { background-color: #FF9800; color: white; font-weight: bold; }")
+        remote_layout.addWidget(self.btn_send_remote)
+
+        remote_group.setLayout(remote_layout)
+
+        # 信号连接，控制子控件可见性
+        self.radio_local.toggled.connect(lambda checked: local_widget.setVisible(checked))
+        self.radio_pages.toggled.connect(lambda checked: pages_widget.setVisible(checked))
+        self.template_check.toggled.connect(template_widget.setVisible)
+
+        layout.addWidget(remote_group)
+        layout.addStretch()  # 保持原有伸缩
 
         laser_panel.setLayout(layout)
 
-        # 添加到主窗口（根据您的布局调整位置）
-        # 例如，如果使用QDockWidget:
+        # 将激光控制面板放入停靠窗口
         dock = QDockWidget("激光控制", self)
         dock.setWidget(laser_panel)
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        # 或者添加到现有的控制面板中
-        # self.control_panel.addWidget(laser_panel)
 
     def on_mode_changed(self):
         """模式切换"""
@@ -2132,3 +2231,177 @@ class MainWindow(QMainWindow):
     def on_download_error(self, err_msg):
         self.progress_dialog.close()
         QMessageBox.critical(self, "下载错误", err_msg)
+
+    def browse_local_dxf(self):
+        """浏览本地 DXF 文件"""
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择 DXF 文件", "", "DXF 文件 (*.dxf);;所有文件 (*.*)")
+        if file_path:
+            self.local_file_path.setText(file_path)
+
+    def browse_template_file(self):
+        """浏览模板文件（EZCAD 格式）"""
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择模板文件", "", "EZCAD 文件 (*.ezd);;所有文件 (*.*)")
+        if file_path:
+            self.template_path_edit.setText(file_path)
+
+    def send_dxf_to_remote(self):
+        """发送 DXF 到远程切割机（支持逐页发送）"""
+        # 获取远程地址
+        remote_url = self.remote_url_edit.text().strip()
+        if not remote_url:
+            QMessageBox.warning(self, "警告", "请输入远程地址！")
+            return
+
+        # 构建模板参数（如果需要）
+        params = None
+        if self.template_check.isChecked():
+            template_path = self.template_path_edit.text().strip()
+            placeholder = self.placeholder_edit.text().strip()
+            if not template_path or not placeholder:
+                QMessageBox.warning(self, "警告", "使用模板时必须填写模板文件路径和占位符名称！")
+                return
+            params = {
+                "mode": "template",
+                "template_path": template_path,
+                "placeholder": placeholder
+            }
+
+        # 决定来源
+        if self.radio_local.isChecked():
+            # 本地文件发送
+            dxf_path = self.local_file_path.text().strip()
+            if not dxf_path or not os.path.exists(dxf_path):
+                QMessageBox.warning(self, "警告", "请选择有效的本地 DXF 文件！")
+                return
+            self._send_single_dxf(dxf_path, params)
+            return
+
+        else:  # 画布页面
+            page_range = self.page_range_edit.text().strip()
+            if not page_range:
+                QMessageBox.warning(self, "警告", "请输入页码范围！")
+                return
+
+            pages_contours = self.get_pages_contours_for_range(page_range)
+            if not pages_contours:
+                QMessageBox.warning(self, "警告",
+                                    f"未找到有效轮廓，页码范围无效或当前无数据。共 {len(self.pages_contours)} 页。")
+                return
+
+            # 如果只有一页，直接发送（避免进度对话框）
+            if len(pages_contours) == 1:
+                contours = pages_contours[0]
+                if not contours:
+                    QMessageBox.warning(self, "警告", f"第 {page_range} 页没有轮廓！")
+                    return
+                # 生成临时 DXF
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(suffix=".dxf", delete=False)
+                temp_path = temp_file.name
+                temp_file.close()
+                try:
+                    success = DXFExporter.export_to_dxf(
+                        contours,
+                        self.canvas.pixels_per_cm,
+                        temp_path,
+                        label_font_size_mm=self.canvas.label_font_size_mm * 0.5,
+                        label_min_size_mm=self.canvas.label_min_size_mm
+                    )
+                    if not success:
+                        QMessageBox.critical(self, "错误", "生成临时 DXF 文件失败！")
+                        return
+                    self._send_single_dxf(temp_path, params)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                return
+
+            # 多页：逐页发送
+            progress = QProgressDialog("准备发送...", "取消", 0, len(pages_contours), self)
+            progress.setWindowTitle("逐页发送")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+
+            for idx, contours in enumerate(pages_contours):
+                if progress.wasCanceled():
+                    break
+                progress.setLabelText(f"正在发送第 {idx + 1}/{len(pages_contours)} 页...")
+                QApplication.processEvents()
+
+                if not contours:
+                    continue  # 跳过空页
+
+                # 生成临时 DXF
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(suffix=f"_page{idx + 1}.dxf", delete=False)
+                temp_path = temp_file.name
+                temp_file.close()
+                try:
+                    success = DXFExporter.export_to_dxf(
+                        contours,
+                        self.canvas.pixels_per_cm,
+                        temp_path,
+                        label_font_size_mm=self.canvas.label_font_size_mm * 0.5,
+                        label_min_size_mm=self.canvas.label_min_size_mm
+                    )
+                    if not success:
+                        QMessageBox.critical(self, "错误", f"生成第 {idx + 1} 页的 DXF 文件失败！")
+                        continue
+
+                    # 发送
+                    success_send, result = self.laser.send_dxf_via_http(temp_path, remote_url, params)
+                    if not success_send:
+                        reply = QMessageBox.question(
+                            self, "发送失败",
+                            f"第 {idx + 1} 页发送失败：{result}\n是否继续发送剩余页面？",
+                            QMessageBox.Yes | QMessageBox.No
+                        )
+                        if reply != QMessageBox.Yes:
+                            break
+                    else:
+                        self.statusBar().showMessage(f"第 {idx + 1} 页发送成功", 2000)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+
+                progress.setValue(idx + 1)
+
+            progress.close()
+            self.statusBar().showMessage("逐页发送完成" if not progress.wasCanceled() else "发送已取消")
+
+    def get_pages_contours_for_range(self, page_range_str: str) -> List[List[Contour]]:
+        """
+        解析页码范围，返回一个列表，每个元素是该页上的所有轮廓（List[Contour]）。
+        例如：page_range_str="1-3" -> 返回 [第1页轮廓列表, 第2页轮廓列表, 第3页轮廓列表]
+        若只有单页，返回 [该页轮廓列表]
+        """
+        if not self.pages_contours:
+            return []
+        total = len(self.pages_contours)
+        if not page_range_str:
+            return []
+        if '-' in page_range_str:
+            parts = page_range_str.split('-')
+            if len(parts) != 2:
+                return []
+            try:
+                start = int(parts[0])
+                end = int(parts[1])
+            except ValueError:
+                return []
+            if start < 1 or end > total or start > end:
+                return []
+            pages = []
+            for i in range(start - 1, end):
+                pages.append([item['contour'] for item in self.pages_contours[i]])
+            return pages
+        else:
+            try:
+                page = int(page_range_str)
+            except ValueError:
+                return []
+            if 1 <= page <= total:
+                return [[item['contour'] for item in self.pages_contours[page - 1]]]
+            else:
+                return []
