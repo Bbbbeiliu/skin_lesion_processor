@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import threading
-
+import requests
 
 class LaserController:
     """激光切割控制器 - 修复状态管理"""
@@ -320,3 +320,23 @@ class LaserController:
             f.write(text_report)
 
         return str(report_file)
+
+    def send_dxf_via_http(self, dxf_path: str, remote_url: str, params: dict = None) -> tuple:
+        """
+        通过 HTTP POST 发送 DXF 文件到远程切割机。
+        :param dxf_path: 本地 DXF 文件路径
+        :param remote_url: 远程接收地址，例如 "http://127.0.0.1:5000/submit"
+        :param params: 模板参数，例如 {"mode": "template", "template_path": "...", "placeholder": "..."}
+        :return: (success, response_or_error)
+        """
+        try:
+            with open(dxf_path, "rb") as f:
+                files = {"file": f}
+                data = {}
+                if params:
+                    data["params"] = json.dumps(params)
+                resp = requests.post(remote_url, files=files, data=data, timeout=30)
+                resp.raise_for_status()
+                return True, resp.json()
+        except Exception as e:
+            return False, str(e)
