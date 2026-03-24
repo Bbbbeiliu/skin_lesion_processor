@@ -10,7 +10,7 @@ file_path = r"D:/Appdevelop/.venv/skin_lesion_processor/resources/test_id4.dxf" 
 params = {
     "mode": "template",                          # 模板模式（可选 "direct"）
     "template_path": "D:/Appdevelop/.venv/skin_lesion_processor/resources/template/template.ezd", # 模板文件绝对路径
-    "placeholder": "PLACEHOLDER"                 # 模板中占位对象的名称
+    # "placeholder": "PLACEHOLDER"                 # 模板中占位对象的名称
 }
 
 # 可选：如果不使用模板，可以传空字典或省略 params
