@@ -7,13 +7,11 @@ import config
 
 app = Flask(__name__)
 
-
 def start_server(queue, log):
     """启动 Flask 服务器，将任务队列存入 app.config"""
     app.config['TASK_QUEUE'] = queue
     app.config['LOGGER'] = log
     app.run(host='0.0.0.0', port=config.SERVER_PORT, debug=False, threaded=True)
-
 
 @app.route('/submit', methods=['POST'])
 def submit_job():
@@ -32,7 +30,7 @@ def submit_job():
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
 
-    # 获取参数
+    # 获取参数（可选，保留用于未来扩展）
     params = request.form.get('params', '{}')
     try:
         params = json.loads(params)
@@ -43,18 +41,14 @@ def submit_job():
     filename = f"{utils.generate_job_id()}_{file.filename}"
     filepath = utils.save_file(file.read(), filename)
 
-    # 创建任务对象
+    # 创建任务对象（不再包含 mode 和 template_path）
     job = {
         'id': filename,
         'filepath': filepath,
         'filename': file.filename,
         'params': params,
         'status': 'waiting',
-        'message': '',
-        # 新增字段
-        'mode': params.get('mode', 'direct'),  # direct / template
-        'template_path': params.get('template_path', None),  # 模板文件路径
-        'placeholder': params.get('placeholder', 'PLACEHOLDER')  # 占位对象名称
+        'message': ''
     }
 
     task_queue.append(job)

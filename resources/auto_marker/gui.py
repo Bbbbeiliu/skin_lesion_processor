@@ -1,8 +1,41 @@
 # gui.py
 import tkinter as tk
 from tkinter import ttk, scrolledtext
-import threading
 import tkinter.messagebox
+import threading
+
+
+class ExecutionDialog(tk.Toplevel):
+    """正在执行的对话框，带有停止按钮"""
+    def __init__(self, title, message, parent=None, stop_callback=None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("300x100")
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.grab_set()
+
+        self.stop_callback = stop_callback
+        self._stopped = False
+
+        frame = ttk.Frame(self, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        self.label = ttk.Label(frame, text=message)
+        self.label.pack(pady=(0, 10))
+
+        self.stop_btn = ttk.Button(frame, text="停止", command=self._stop)
+        self.stop_btn.pack()
+
+    def _stop(self):
+        self._stopped = True
+        if self.stop_callback:
+            self.stop_callback()
+        self.destroy()
+
+    def _on_close(self):
+        self._stop()
+
 
 class AppGUI:
     def __init__(self, task_queue, start_receiver_func):
@@ -40,11 +73,9 @@ class AppGUI:
         btn_frame = ttk.Frame(self.root, padding="10")
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # ttk.Button(btn_frame, text="确认选中任务", command=self.confirm_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="执行选中任务", command=self.execute_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="拒绝选中任务", command=self.reject_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="清空已完成", command=self.clear_completed).pack(side=tk.LEFT, padx=5)
-
 
         # 日志区域
         log_frame = ttk.LabelFrame(self.root, text="运行日志", padding="5")
@@ -78,49 +109,38 @@ class AppGUI:
 
     def refresh_gui(self):
         """增量刷新任务列表，保留选中状态"""
-        # 获取当前所有任务的 ID 与 Treeview 项的映射
         current_items = {}
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
             job_id = values[0] if values else None
             current_items[job_id] = item
 
-        # 遍历任务队列，更新或插入
         for job in self.task_queue:
             job_id = job['id']
             status_display = {
                 'waiting': '待执行',
-                'pending': '等待预览',
-                'previewing': '预览中',
-                'preview_done': '预览完成，待确认',  # 新增
-                'pending_mark': '等待加工',
-                'processing': '加工中',
+                'processing': '加工中',   # 合并预览+标刻状态
                 'completed': '已完成',
                 'failed': '失败'
             }.get(job['status'], job['status'])
             new_values = (job_id, job['filename'], status_display, job['message'])
 
             if job_id in current_items:
-                # 更新现有项
                 item = current_items.pop(job_id)
                 if self.tree.item(item, 'values') != new_values:
                     self.tree.item(item, values=new_values)
             else:
-                # 插入新项
                 self.tree.insert('', tk.END, values=new_values)
 
-        # 删除不再存在的任务项
         for item in current_items.values():
             self.tree.delete(item)
 
-        # 更新状态栏
         waiting = len([j for j in self.task_queue if j['status'] == 'waiting'])
-        processing = len([j for j in self.task_queue if j['status'] in ('processing', 'previewing', 'pending_mark')])
+        processing = len([j for j in self.task_queue if j['status'] == 'processing'])
         completed = len([j for j in self.task_queue if j['status'] == 'completed'])
         failed = len([j for j in self.task_queue if j['status'] == 'failed'])
         self.status_var.set(f"待执行: {waiting} | 加工中: {processing} | 已完成: {completed} | 失败: {failed}")
 
-        # 每秒刷新一次
         self.root.after(1000, self.refresh_gui)
 
     def add_log(self, msg):
@@ -142,15 +162,29 @@ class AppGUI:
                 break
         self.add_log(f"任务 {job['id']} 状态: {job['status']} - {job['message']}")
 
-        # 如果状态变为 preview_done，弹出确认窗口
-        if job['status'] == 'preview_done':
-            self.ask_confirm_mark(job)
+        # 根据状态显示或关闭执行对话框
+        if job['status'] == 'processing':
+            if not hasattr(self, '_exec_dialog') or self._exec_dialog is None:
+                stop_event = job.get('stop_event')
+                self._exec_dialog = ExecutionDialog(
+                    "激光加工", "正在执行预览+标刻...", self.root,
+                    stop_callback=stop_event.set if stop_event else None
+                )
+                self._exec_dialog.protocol("WM_DELETE_WINDOW", self._on_exec_dialog_closed)
+        elif job['status'] in ('completed', 'failed', 'waiting'):
+            if hasattr(self, '_exec_dialog') and self._exec_dialog:
+                self._exec_dialog.destroy()
+                self._exec_dialog = None
+
+    def _on_exec_dialog_closed(self):
+        if hasattr(self, '_exec_dialog') and self._exec_dialog:
+            self._exec_dialog = None
 
     def run(self):
         self.root.mainloop()
 
     def execute_selected(self):
-        """执行选中任务：预览 + 后续确认"""
+        """执行选中任务：立即开始预览+标刻，无中间弹窗"""
         selected = self.tree.selection()
         if not selected:
             return
@@ -158,22 +192,8 @@ class AppGUI:
         job_id = self.tree.item(item, 'values')[0]
         for job in self.task_queue:
             if job['id'] == job_id and job['status'] == 'waiting':
-                job['status'] = 'pending'
-                self.add_log(f"任务 {job_id} 开始红光预览")
+                job['stop_event'] = threading.Event()
+                job['status'] = 'processing'
+                job['message'] = '等待执行...'
+                self.add_log(f"任务 {job['id']} 开始执行（预览5次+标刻3次）")
                 break
-
-    def ask_confirm_mark(self, job):
-        """弹出确认加工窗口"""
-        result = tk.messagebox.askyesno("加工确认",
-                                        f"任务 {job['id']}\n红光预览已完成，是否开始实际加工？")
-        if result:
-            # 用户确认加工
-            job['status'] = 'pending_mark'
-            self.add_log(f"任务 {job['id']} 已确认加工，等待执行")
-        else:
-            # 用户取消，任务退回等待状态
-            job['status'] = 'waiting'
-            job['message'] = ''
-            self.add_log(f"任务 {job['id']} 已取消加工，退回待执行状态")
-        # 刷新界面
-        self.refresh_gui()  # 这里直接刷新，因为已经通过 update_job_status 更新过，但为了立即显示可调用
