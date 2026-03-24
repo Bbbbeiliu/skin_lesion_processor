@@ -1847,7 +1847,9 @@ class MainWindow(QMainWindow):
         # 远程地址
         url_layout = QHBoxLayout()
         url_layout.addWidget(QLabel("远程地址:"))
-        self.remote_url_edit = QLineEdit("http://127.0.0.1:5000/submit")
+        # self.remote_url_edit = QLineEdit("http://127.0.0.1:5000/submit") # 本机测试采用此url地址
+        self.remote_url_edit = QLineEdit("http://10.181.27.186:5000/submit") #激光切割机ipv4地址
+
         url_layout.addWidget(self.remote_url_edit)
         remote_layout.addLayout(url_layout)
 
@@ -1887,33 +1889,33 @@ class MainWindow(QMainWindow):
         remote_layout.addWidget(pages_widget)
         pages_widget.setVisible(False)
 
-        # 模板选项（可折叠）
-        self.template_check = QCheckBox("使用模板")
-        remote_layout.addWidget(self.template_check)
-
-        template_widget = QWidget()
-        template_layout = QVBoxLayout(template_widget)
-        template_layout.setContentsMargins(20, 0, 0, 0)
-
-        # 模板路径
-        template_path_layout = QHBoxLayout()
-        template_path_layout.addWidget(QLabel("模板文件:"))
-        self.template_path_edit = QLineEdit()
-        template_path_layout.addWidget(self.template_path_edit)
-        self.btn_browse_template = QPushButton("浏览...")
-        self.btn_browse_template.clicked.connect(self.browse_template_file)
-        template_path_layout.addWidget(self.btn_browse_template)
-        template_layout.addLayout(template_path_layout)
-
-        # 占位符名称
-        placeholder_layout = QHBoxLayout()
-        placeholder_layout.addWidget(QLabel("占位符名称:"))
-        self.placeholder_edit = QLineEdit("PLACEHOLDER")
-        placeholder_layout.addWidget(self.placeholder_edit)
-        template_layout.addLayout(placeholder_layout)
-
-        remote_layout.addWidget(template_widget)
-        template_widget.setVisible(False)
+        # # 模板选项（可折叠）
+        # self.template_check = QCheckBox("使用模板")
+        # remote_layout.addWidget(self.template_check)
+        #
+        # template_widget = QWidget()
+        # template_layout = QVBoxLayout(template_widget)
+        # template_layout.setContentsMargins(20, 0, 0, 0)
+        #
+        # # 模板路径
+        # template_path_layout = QHBoxLayout()
+        # template_path_layout.addWidget(QLabel("模板文件:"))
+        # self.template_path_edit = QLineEdit()
+        # template_path_layout.addWidget(self.template_path_edit)
+        # self.btn_browse_template = QPushButton("浏览...")
+        # self.btn_browse_template.clicked.connect(self.browse_template_file)
+        # template_path_layout.addWidget(self.btn_browse_template)
+        # template_layout.addLayout(template_path_layout)
+        #
+        # # 占位符名称
+        # placeholder_layout = QHBoxLayout()
+        # placeholder_layout.addWidget(QLabel("占位符名称:"))
+        # self.placeholder_edit = QLineEdit("PLACEHOLDER")
+        # placeholder_layout.addWidget(self.placeholder_edit)
+        # template_layout.addLayout(placeholder_layout)
+        #
+        # remote_layout.addWidget(template_widget)
+        # template_widget.setVisible(False)
 
         # 发送按钮
         self.btn_send_remote = QPushButton("发送到远程切割机")
@@ -1927,7 +1929,7 @@ class MainWindow(QMainWindow):
         # 信号连接，控制子控件可见性
         self.radio_local.toggled.connect(lambda checked: local_widget.setVisible(checked))
         self.radio_pages.toggled.connect(lambda checked: pages_widget.setVisible(checked))
-        self.template_check.toggled.connect(template_widget.setVisible)
+        # self.template_check.toggled.connect(template_widget.setVisible)
 
         layout.addWidget(remote_group)
         layout.addStretch()  # 保持原有伸缩
@@ -2238,11 +2240,11 @@ class MainWindow(QMainWindow):
         if file_path:
             self.local_file_path.setText(file_path)
 
-    def browse_template_file(self):
-        """浏览模板文件（EZCAD 格式）"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择模板文件", "", "EZCAD 文件 (*.ezd);;所有文件 (*.*)")
-        if file_path:
-            self.template_path_edit.setText(file_path)
+    # def browse_template_file(self):
+    #     """浏览模板文件（EZCAD 格式）"""
+    #     file_path, _ = QFileDialog.getOpenFileName(self, "选择模板文件", "", "EZCAD 文件 (*.ezd);;所有文件 (*.*)")
+    #     if file_path:
+    #         self.template_path_edit.setText(file_path)
 
     def send_dxf_to_remote(self):
         """发送 DXF 到远程切割机（支持逐页发送）"""
@@ -2254,17 +2256,17 @@ class MainWindow(QMainWindow):
 
         # 构建模板参数（如果需要）
         params = None
-        if self.template_check.isChecked():
-            template_path = self.template_path_edit.text().strip()
-            placeholder = self.placeholder_edit.text().strip()
-            if not template_path or not placeholder:
-                QMessageBox.warning(self, "警告", "使用模板时必须填写模板文件路径和占位符名称！")
-                return
-            params = {
-                "mode": "template",
-                "template_path": template_path,
-                "placeholder": placeholder
-            }
+        # if self.template_check.isChecked():
+        #     template_path = self.template_path_edit.text().strip()
+        #     placeholder = self.placeholder_edit.text().strip()
+        #     if not template_path or not placeholder:
+        #         QMessageBox.warning(self, "警告", "使用模板时必须填写模板文件路径和占位符名称！")
+        #         return
+        #     params = {
+        #         "mode": "template",
+        #         "template_path": template_path,
+        #         "placeholder": placeholder
+        #     }
 
         # 决定来源
         if self.radio_local.isChecked():
