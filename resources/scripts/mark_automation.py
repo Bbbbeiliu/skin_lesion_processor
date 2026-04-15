@@ -279,6 +279,17 @@ def main():
     # ---------- 导入 DXF 并居中 ----------
     print("\n导入 DXF 文件...")
     ok, _, _ = import_dxf_and_center(args.dxf_path, "Content")
+    pen_no = ezd.lmc1_GetPenNumberFromEnt("Content")
+    print(f"对象 'Content' 的实际笔号: {pen_no}")
+    # 在 import_dxf_and_center 之后添加
+    count = ezd.lmc1_GetEntityCount()
+    print(f"当前数据库中共有 {count} 个对象")
+    for i in range(count):
+        name_buf = ctypes.create_unicode_buffer(256)
+        ezd.lmc1_GetEntityName(i, name_buf)
+        obj_name = name_buf.value
+        pen = ezd.lmc1_GetPenNumberFromEnt(obj_name)
+        print(f"  对象 {i}: '{obj_name}' 笔号 = {pen}")
     if not ok:
         ezd.lmc1_Close()
         sys.exit(1)
