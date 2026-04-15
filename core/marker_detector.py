@@ -12,179 +12,88 @@ class WhiteBallMarkerDetector:
         # 参数配置
         self.ball_diameter_mm = ball_diameter_mm  # 小球实际直径10mm
 
-        # 三套参数配置（优先级从高到低）
+        # 多套参数配置
         self.param_sets = [
-            # Value1 - 最高优先级
             {
                 "name": "Value1",
-                "h_min": 47,
-                "h_max": 122,
-                "s_min": 7,
-                "s_max": 88,
-                "v_min": 148,
-                "v_max": 255,
-                "open_size": 3,
-                "close_size": 5,
-                "dilate_size": 3,
-                "min_area": 5000,
-                "min_circularity": 0.6
+                "h_min": 47, "h_max": 122, "s_min": 7, "s_max": 88, "v_min": 148, "v_max": 255,
+                "open_size": 3, "close_size": 5, "dilate_size": 3, "min_area": 5000, "min_circularity": 0.6
             },
-            # Value2 - 次优先级
             {
                 "name": "Value2",
-                "h_min": 0,
-                "h_max": 179,
-                "s_min": 0,
-                "s_max": 50,
-                "v_min": 180,
-                "v_max": 255,
-                "open_size": 3,
-                "close_size": 5,
-                "dilate_size": 3,
-                "min_area": 5000,
-                "min_circularity": 0.6
+                "h_min": 0, "h_max": 179, "s_min": 0, "s_max": 50, "v_min": 180, "v_max": 255,
+                "open_size": 3, "close_size": 5, "dilate_size": 3, "min_area": 5000, "min_circularity": 0.6
             },
-            # 可以在这里插入 Value4
-            # {
-            #     "name": "Value4",
-            #     "h_min": 50,
-            #     "h_max": 120,
-            #     "s_min": 10,
-            #     "s_max": 70,
-            #     "v_min": 160,
-            #     "v_max": 255,
-            #     "open_size": 5,
-            #     "close_size": 7,
-            #     "dilate_size": 4,
-            #     "min_area": 5000,
-            #     "min_circularity": 0.6
-            # },
-            # Value3 - 最低优先级
             {
                 "name": "Value3",
-                "h_min": 40,
-                "h_max": 122,
-                "s_min": 5,
-                "s_max": 88,
-                "v_min": 148,
-                "v_max": 255,
-                "open_size": 3,
-                "close_size": 8,
-                "dilate_size": 3,
-                "min_area": 5000,
-                "min_circularity": 0.6
+                "h_min": 40, "h_max": 122, "s_min": 5, "s_max": 88, "v_min": 148, "v_max": 255,
+                "open_size": 3, "close_size": 8, "dilate_size": 3, "min_area": 5000, "min_circularity": 0.6
+            },
+            {
+                "name": "Value4",
+                "h_min": 38, "h_max": 110, "s_min": 0, "s_max": 115, "v_min": 169, "v_max": 255,
+                "open_size": 12, "close_size": 15, "dilate_size": 1, "min_area": 5000, "min_circularity": 0.75
             }
         ]
 
         # 统一的形状检测参数
-        self.min_circularity = 0.6  # 最小圆形度
-        self.min_ellipse_ratio = 0.4  # 最小椭圆长短轴比
-        self.min_area = 5000  # 最小轮廓面积
-        self.max_area_ratio = 0.03  # 最大面积占图像比例
+        self.min_circularity = 0.6
+        self.min_ellipse_ratio = 0.4
+        self.min_area = 5000
+        self.max_area_ratio = 0.03
 
-        # 当前使用的参数集
         self.current_params = None
-        self.param_set_used = None  # 记录使用的是哪套参数
+        self.param_set_used = None
 
     def set_current_params(self, params):
-        """设置当前使用的参数"""
         self.current_params = params
         self.param_set_used = params["name"]
 
-        # 使用参数集中的形状参数，但优先级低于统一参数
-        # 这里我们使用统一参数，所以忽略参数集中的min_circularity
-        pass
-
     def simple_color_segmentation(self, image):
-        """简化的颜色分割 - 使用当前参数集的HSV阈值"""
         if self.current_params is None:
             raise ValueError("没有设置当前参数集")
-
-        # 转换为HSV
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-        # 使用当前参数集的阈值
-        lower_bound = np.array([
-            self.current_params["h_min"],
-            self.current_params["s_min"],
-            self.current_params["v_min"]
-        ])
-        upper_bound = np.array([
-            self.current_params["h_max"],
-            self.current_params["s_max"],
-            self.current_params["v_max"]
-        ])
-
-        # 创建掩码
-        mask = cv2.inRange(hsv, lower_bound, upper_bound)
-
+        lower = np.array([self.current_params["h_min"], self.current_params["s_min"], self.current_params["v_min"]])
+        upper = np.array([self.current_params["h_max"], self.current_params["s_max"], self.current_params["v_max"]])
+        mask = cv2.inRange(hsv, lower, upper)
         return mask, hsv
 
     def apply_morphological_operations(self, mask):
-        """应用形态学操作 - 使用当前参数集的形态学参数"""
         if self.current_params is None:
             raise ValueError("没有设置当前参数集")
-
-        # 确保核大小为奇数
         open_size = self.current_params["open_size"]
         close_size = self.current_params["close_size"]
         dilate_size = self.current_params["dilate_size"]
-
         open_size = open_size if open_size % 2 == 1 else open_size + 1
         close_size = close_size if close_size % 2 == 1 else close_size + 1
         dilate_size = dilate_size if dilate_size % 2 == 1 else dilate_size + 1
 
-        # 开运算去除小噪点
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size))
         opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
-
-        # 闭运算填充小孔洞
         kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
         closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close, iterations=2)
-
-        # 填充剩余孔洞
         filled = ndimage.binary_fill_holes(closed).astype(np.uint8) * 255
-
-        # 膨胀以连接邻近区域
         kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_size, dilate_size))
         dilated = cv2.dilate(filled, kernel_dilate, iterations=1)
-
         return dilated
 
     def detect_and_select_best_candidate(self, mask, image):
-        """检测并选择最佳候选轮廓 - 使用统一的形状检测参数"""
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         if not contours:
             return None
-
         img_height, img_width = image.shape[:2]
         image_area = img_height * img_width
         candidates = []
 
-        # 过滤轮廓
         for contour in contours:
             area = cv2.contourArea(contour)
-
-            # 面积过滤 - 使用统一参数
-            if (area < self.min_area or area > image_area * self.max_area_ratio):
+            if area < self.min_area or area > image_area * self.max_area_ratio:
                 continue
-
-            # 周长计算
             perimeter = cv2.arcLength(contour, True)
-
-            # 圆形度计算
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-            else:
-                circularity = 0
-
-            # 凸包检测
+            circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
             hull = cv2.convexHull(contour)
             hull_area = cv2.contourArea(hull)
             convexity = area / hull_area if hull_area > 0 else 0
-
-            # 椭圆拟合（如果点数足够）
             ellipse = None
             ellipse_ratio = 0
             if len(contour) >= 5:
@@ -196,10 +105,7 @@ class WhiteBallMarkerDetector:
                     ellipse_ratio = minor_axis / major_axis if major_axis > 0 else 0
                 except:
                     pass
-
-            # 最小外接圆
             (circle_center, circle_radius) = cv2.minEnclosingCircle(contour)
-
             candidate = {
                 'contour': contour,
                 'area': area,
@@ -211,250 +117,213 @@ class WhiteBallMarkerDetector:
                 'circle_radius': circle_radius,
                 'hull': hull
             }
-
-            # 形状评分 - 使用统一参数中的min_circularity和min_ellipse_ratio
             shape_score = 0
-            if candidate['circularity'] >= self.min_circularity:
-                circularity_score = candidate['circularity']
-            else:
-                circularity_score = 0
-
-            ellipse_score = 0
-            if candidate['ellipse'] is not None:
-                if candidate['ellipse_ratio'] >= self.min_ellipse_ratio:
-                    ellipse_score = candidate['ellipse_ratio']
-
+            circularity_score = candidate['circularity'] if candidate['circularity'] >= self.min_circularity else 0
+            ellipse_score = candidate['ellipse_ratio'] if (candidate['ellipse'] is not None and candidate['ellipse_ratio'] >= self.min_ellipse_ratio) else 0
             convexity_score = candidate['convexity']
-
-            # 综合评分
-            candidate['shape_score'] = (
-                    circularity_score * 0.4 +
-                    ellipse_score * 0.3 +
-                    convexity_score * 0.3
-            )
-
-            # 使用参数集中的min_circularity进行过滤
+            candidate['shape_score'] = circularity_score * 0.4 + ellipse_score * 0.3 + convexity_score * 0.3
             if self.current_params and candidate['circularity'] < self.current_params["min_circularity"]:
                 continue
-
             candidates.append(candidate)
 
         if not candidates:
             return None
-
-        # 按评分排序并选择最佳
         candidates.sort(key=lambda x: x['shape_score'], reverse=True)
-
-        # 如果最高分太低，可能没有合适的候选
-        if not candidates or candidates[0]['shape_score'] < 0.4:
+        if candidates[0]['shape_score'] < 0.4:
             return None
-
-        best_candidate = candidates[0]
-
-        # 计算质心
-        M = cv2.moments(best_candidate['contour'])
+        best = candidates[0]
+        M = cv2.moments(best['contour'])
         if M["m00"] != 0:
             cX = int(M["m10"] / M["m00"])
             cY = int(M["m01"] / M["m00"])
         else:
-            cX, cY = best_candidate['circle_center']
-
-        best_candidate['centroid'] = (cX, cY)
-
-        return best_candidate
+            cX, cY = best['circle_center']
+        best['centroid'] = (cX, cY)
+        return best
 
     def calculate_pixel_scale(self, candidate):
-        """计算像素比例尺"""
         if candidate is None:
-            return None
-
-        # 使用椭圆长轴或外接圆直径作为像素直径
+            return None, None
         if candidate['ellipse'] is not None:
             (center, axes, angle) = candidate['ellipse']
             major_axis = max(axes)
             pixel_diameter = major_axis
         else:
             pixel_diameter = candidate['circle_radius'] * 2
-
-        # 计算比例尺：mm/pixel
         scale = self.ball_diameter_mm / pixel_diameter if pixel_diameter > 0 else None
-
         return scale, pixel_diameter
 
-    def create_comparison_image(self, original, mask, candidate, pixel_scale=None):
-        """创建包含三个子图的对比图像"""
-        # 创建大图，包含三个子图
+    def create_comparison_image(self, original, mask, candidate, pixel_scale=None, error_msg=None):
+        """创建对比图，处理 mask/candidate 为 None 的情况"""
         height, width = original.shape[:2]
-        fig_width = width * 3
-        fig_height = height
-
-        # 创建空白大图
-        comparison = np.ones((fig_height, fig_width, 3), dtype=np.uint8) * 50  # 灰色背景
+        # 创建三块画布
+        comparison = np.ones((height, width * 3, 3), dtype=np.uint8) * 50
 
         # 1. 原始图像
         original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
         comparison[0:height, 0:width] = original_rgb
+        cv2.putText(comparison, "Original Image", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
 
-        # 添加子图标题 - 加大字体
-        cv2.putText(comparison, "Original Image", (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+        # 2. 阈值分割掩码（可能为 None）
+        if mask is not None:
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+        else:
+            mask_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+            cv2.putText(mask_rgb, "No mask available", (50, height//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        comparison[0:height, width:width*2] = mask_rgb
+        cv2.putText(comparison, "Segmentation Mask", (width + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
 
-        # 2. 阈值分割掩码图像
-        mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
-        comparison[0:height, width:width * 2] = mask_rgb
-
-        # 添加子图标题 - 加大字体
-        cv2.putText(comparison, "Segmentation Mask", (width + 10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-
-        # 3. 叠加圆形轮廓检测结果
+        # 3. 检测结果图
         result = original.copy()
-
-        if candidate is not None:
-            # 绘制轮廓
+        detected = candidate is not None
+        if detected:
             cv2.drawContours(result, [candidate['contour']], -1, (0, 255, 0), 2)
-
-            # 绘制椭圆（如果检测到）
             if candidate['ellipse'] is not None:
                 cv2.ellipse(result, candidate['ellipse'], (0, 165, 255), 2)
-
-            # 绘制最小外接圆
-            cv2.circle(result, candidate['circle_center'],
-                       int(candidate['circle_radius']), (255, 0, 255), 2)
-
-            # 绘制质心
+            cv2.circle(result, candidate['circle_center'], int(candidate['circle_radius']), (255, 0, 255), 2)
             cv2.circle(result, candidate['centroid'], 5, (0, 0, 255), -1)
 
-            # 在图像上显示关键信息
-            info_lines = [
-                f"Params: {self.param_set_used}",
-                f"Score: {candidate['shape_score']:.3f}",
-                f"Circularity: {candidate['circularity']:.2f}",
-                f"Area: {candidate['area']:.0f} px"
-            ]
-
+        # 构建信息文本（使用更大字体显示 Score 和参数集）
+        info_lines = []
+        if error_msg:
+            info_lines.append(f"Error: {error_msg}")
+        elif detected:
+            info_lines.append(f"Params: {self.param_set_used}")
+            info_lines.append(f"Score: {candidate['shape_score']:.3f}")
+            info_lines.append(f"Circularity: {candidate['circularity']:.2f}")
+            info_lines.append(f"Area: {candidate['area']:.0f} px")
             if pixel_scale:
                 info_lines.append(f"Scale: {pixel_scale:.4f} mm/px")
+        else:
+            info_lines.append("No marker detected")
+            info_lines.append(f"Last params tried: {self.param_set_used if self.param_set_used else 'None'}")
 
-            # 选择合适的位置显示信息 - 左上角
-            x_pos = 20
-            y_pos = 50
-            line_height = 35  # 行间距
+        # 绘制半透明背景框
+        x_pos, y_pos = 20, 50
+        line_height_small = 30
+        line_height_big = 40   # 用于 Score 和 Params 的大行距
+        font_small = 0.8
+        font_big = 1.5         # 相当于14号左右
+        thickness_small = 2
+        thickness_big = 3
 
-            # 创建半透明背景框
-            bg_height = len(info_lines) * line_height + 20
-            bg_width = 300  # 稍微加宽以容纳参数集名称
-            overlay = result.copy()
+        # 计算总高度
+        total_lines = len(info_lines)
+        # 前两行（Params 和 Score）用大字体，其余用小字体
+        big_lines = 2 if detected and not error_msg else 0
+        if error_msg:
+            big_lines = 1  # 错误信息也用大字体
+        total_height = big_lines * line_height_big + (total_lines - big_lines) * line_height_small + 20
+        bg_width = 320
 
-            # 绘制半透明矩形背景
-            cv2.rectangle(overlay, (x_pos - 10, y_pos - 30),
-                          (x_pos + bg_width, y_pos + bg_height),
-                          (0, 0, 0), -1)
+        overlay = result.copy()
+        cv2.rectangle(overlay, (x_pos - 10, y_pos - 30), (x_pos + bg_width, y_pos + total_height), (0, 0, 0), -1)
+        result = cv2.addWeighted(overlay, 0.7, result, 0.3, 0)
+        cv2.rectangle(result, (x_pos - 10, y_pos - 30), (x_pos + bg_width, y_pos + total_height), (255, 255, 255), 1)
 
-            # 添加透明度
-            alpha = 0.7
-            result = cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0)
-
-            # 绘制白色边框
-            cv2.rectangle(result, (x_pos - 10, y_pos - 30),
-                          (x_pos + bg_width, y_pos + bg_height),
-                          (255, 255, 255), 1)
-
-            # 添加信息文本 - 加大字体和粗细
-            for i, line in enumerate(info_lines):
-                # 参数集名称用黄色突出显示
-                color = (255, 255, 0) if i == 0 else (255, 255, 255)
-                cv2.putText(result, line, (x_pos, y_pos + i * line_height),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        # 绘制文本
+        current_y = y_pos
+        for i, line in enumerate(info_lines):
+            if i < big_lines:
+                font = font_big
+                thickness = thickness_big
+                line_height = line_height_big
+                color = (0, 255, 255) if "Params" in line or "Score" in line else (255, 255, 255)
+            else:
+                font = font_small
+                thickness = thickness_small
+                line_height = line_height_small
+                color = (255, 255, 255)
+            cv2.putText(result, line, (x_pos, current_y), cv2.FONT_HERSHEY_SIMPLEX, font, color, thickness)
+            current_y += line_height
 
         result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-        comparison[0:height, width * 2:width * 3] = result_rgb
+        comparison[0:height, width*2:width*3] = result_rgb
+        cv2.putText(comparison, "Detection Result", (width*2 + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
 
-        # 添加子图标题 - 加大字体
-        cv2.putText(comparison, "Detection Result", (width * 2 + 10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-
-        # 添加分割线
+        # 分割线
         cv2.line(comparison, (width, 0), (width, height), (200, 200, 200), 2)
-        cv2.line(comparison, (width * 2, 0), (width * 2, height), (200, 200, 200), 2)
-
+        cv2.line(comparison, (width*2, 0), (width*2, height), (200, 200, 200), 2)
         return comparison
 
     def try_detection_with_params(self, image, params):
-        """使用指定的参数集尝试检测"""
-        # 设置当前参数
         self.set_current_params(params)
-
-        # 1. 简化的颜色分割
         color_mask, hsv = self.simple_color_segmentation(image)
-
-        # 2. 形态学处理
         processed_mask = self.apply_morphological_operations(color_mask)
-
-        # 3. 检测并选择最佳候选
         best_candidate = self.detect_and_select_best_candidate(processed_mask, image)
-
         return best_candidate, processed_mask
 
     def process_single_image(self, image_path, output_dir=None):
-        """处理单张图像 - 依次尝试多套参数"""
-        # 读取图像
+        """处理单张图像，总是生成对比图并保存"""
+        # 读取图像，处理失败情况
         image = cv2.imread(str(image_path))
+        error_msg = None
         if image is None:
-            print(f"错误: 无法读取图像 {image_path}")
-            return None
+            error_msg = f"Cannot read image: {image_path}"
+            # 创建一个空白图像作为占位
+            image = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(image, "IMAGE READ ERROR", (100, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            # 直接生成错误对比图并返回
+            comparison = self.create_comparison_image(image, None, None, None, error_msg)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                filename = Path(image_path).stem
+                cv2.imwrite(os.path.join(output_dir, f"{filename}_comparison.png"), cv2.cvtColor(comparison, cv2.COLOR_RGB2BGR))
+            return {
+                'detected': False,
+                'param_set': None,
+                'score': 0,
+                'circularity': 0,
+                'area': 0,
+                'pixel_scale': None,
+                'comparison_image': comparison,
+                'error': error_msg
+            }
 
         original = image.copy()
-        height, width = image.shape[:2]
-
-        # 初始化变量
         best_candidate = None
         processed_mask = None
         pixel_scale = None
         param_set_used = None
 
-        # 依次尝试三套参数
+        # 依次尝试多套参数
         for params in self.param_sets:
             try:
                 candidate, mask = self.try_detection_with_params(image, params)
-
                 if candidate is not None:
                     best_candidate = candidate
                     processed_mask = mask
                     param_set_used = params["name"]
-
-                    # 计算像素比例尺
-                    pixel_scale, pixel_diameter = self.calculate_pixel_scale(best_candidate)
-
+                    pixel_scale, _ = self.calculate_pixel_scale(best_candidate)
                     print(f"  使用参数集 {params['name']}: 检测成功")
-                    print(f"    评分: {best_candidate['shape_score']:.3f}, "
-                          f"圆形度: {best_candidate['circularity']:.2f}, "
-                          f"面积: {best_candidate['area']:.0f} px")
-
+                    print(f"    评分: {best_candidate['shape_score']:.3f}, 圆形度: {best_candidate['circularity']:.2f}, 面积: {best_candidate['area']:.0f} px")
                     if pixel_scale:
                         print(f"    比例尺: {pixel_scale:.6f} mm/px")
-
-                    break  # 找到有效的参数集，跳出循环
+                    break
                 else:
                     print(f"  使用参数集 {params['name']}: 未检测到")
-
             except Exception as e:
                 print(f"  使用参数集 {params['name']} 时出错: {str(e)}")
                 continue
 
-        # 创建对比图像
-        comparison_image = self.create_comparison_image(original, processed_mask, best_candidate, pixel_scale)
+        # 如果所有参数都失败，保留最后尝试的 mask（任意一个，这里取最后一个 params 的 mask）
+        if best_candidate is None and processed_mask is None:
+            # 尝试获取最后一个有效的 mask（简单重试一次最后一个参数集获取 mask）
+            try:
+                _, last_mask = self.try_detection_with_params(image, self.param_sets[-1])
+                processed_mask = last_mask
+            except:
+                processed_mask = None
+
+        # 创建对比图（总是执行）
+        comparison = self.create_comparison_image(original, processed_mask, best_candidate, pixel_scale, error_msg)
 
         # 保存结果
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             filename = Path(image_path).stem
+            cv2.imwrite(os.path.join(output_dir, f"{filename}_comparison.png"), cv2.cvtColor(comparison, cv2.COLOR_RGB2BGR))
 
-            # 保存对比图像
-            cv2.imwrite(os.path.join(output_dir, f"{filename}_comparison.png"),
-                        cv2.cvtColor(comparison_image, cv2.COLOR_RGB2BGR))
-
-        # 返回检测结果
         detected = best_candidate is not None
         return {
             'detected': detected,
@@ -463,20 +332,16 @@ class WhiteBallMarkerDetector:
             'circularity': best_candidate['circularity'] if detected else 0,
             'area': best_candidate['area'] if detected else 0,
             'pixel_scale': pixel_scale if detected else None,
-            'comparison_image': comparison_image
+            'comparison_image': comparison
         }
 
     def process_folder(self, folder_path, output_folder=None):
-        """处理文件夹中的所有图像"""
         if output_folder is None:
             output_folder = os.path.join(folder_path, "detection_results")
-
         os.makedirs(output_folder, exist_ok=True)
 
-        # 查找所有图像文件
         image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.tif', '*.tiff']
         image_files = []
-
         for ext in image_extensions:
             image_files.extend(glob.glob(os.path.join(folder_path, ext)))
 
@@ -487,46 +352,41 @@ class WhiteBallMarkerDetector:
         print(f"找到 {len(image_files)} 个图像文件")
         print("=" * 80)
 
-        # 处理每个图像
         detection_count = 0
-
         for i, img_file in enumerate(image_files):
-            print(f"\n处理 [{i + 1}/{len(image_files)}]: {os.path.basename(img_file)}")
-
+            print(f"\n处理 [{i+1}/{len(image_files)}]: {os.path.basename(img_file)}")
             try:
                 result = self.process_single_image(img_file, output_folder)
-
                 if result and result['detected']:
                     detection_count += 1
                     print(f"  ✓ 检测成功 (使用参数集: {result['param_set']})")
                 else:
-                    print(f"  ✗ 所有参数集均未检测到")
-
+                    print(f"  ✗ 未检测到")
             except Exception as e:
                 print(f"  处理失败: {str(e)}")
+                # 即使异常，也尝试生成一个错误对比图（简单处理：创建空白图）
+                try:
+                    dummy_img = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(dummy_img, f"PROCESSING ERROR: {str(e)}", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    comparison = self.create_comparison_image(dummy_img, None, None, None, str(e))
+                    out_path = os.path.join(output_folder, f"{Path(img_file).stem}_error.png")
+                    cv2.imwrite(out_path, cv2.cvtColor(comparison, cv2.COLOR_RGB2BGR))
+                except:
+                    pass
 
-        # 输出统计结果
         print("\n" + "=" * 80)
-        print(f"处理完成!")
-        print(f"成功检测: {detection_count}/{len(image_files)}")
-        print(f"检测成功率: {detection_count / len(image_files) * 100:.1f}%")
+        print(f"处理完成! 成功检测: {detection_count}/{len(image_files)}")
+        print(f"检测成功率: {detection_count/len(image_files)*100:.1f}%")
         print(f"结果保存到: {output_folder}")
-
         return detection_count, len(image_files)
 
 
 def main():
-    """主函数"""
-    # 创建检测器，设置小球直径为10mm
     detector = WhiteBallMarkerDetector(ball_diameter_mm=10)
-
-    # 处理文件夹
-    detection_count, total_images = detector.process_folder(
-        folder_path="D:/Appdevelop/.venv/skin_lesion_processor/resources/overlays",
-        output_folder="D:/Appdevelop/.venv/skin_lesion_processor/resources/detection_results"
+    detector.process_folder(
+        folder_path="../analyze/asserts",
+        output_folder="D:/Appdevelop/.venv/skin_lesion_processor/core/temp_detection_results"
     )
-
-    print(f"\n最终统计: 成功检测 {detection_count} 个，总共 {total_images} 个图像")
 
 
 if __name__ == "__main__":

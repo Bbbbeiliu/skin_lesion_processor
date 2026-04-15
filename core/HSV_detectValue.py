@@ -172,7 +172,7 @@ class HSVThresholdAdjuster:
 
         # 最小面积
         tk.Label(other_frame, text="最小面积:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        tk.Scale(other_frame, from_=10, to=1000, orient=tk.HORIZONTAL,
+        tk.Scale(other_frame, from_=10, to=5000, orient=tk.HORIZONTAL,
                  variable=self.min_area, length=300, command=self.update_display).grid(row=0, column=1, pady=5)
         tk.Label(other_frame, textvariable=self.min_area).grid(row=0, column=2, padx=10)
 
@@ -460,8 +460,10 @@ class HSVThresholdAdjuster:
 
     def load_preset(self):
         """加载预设（从默认位置）"""
-        default_path = "hsv_preset.json"
+        default_path = "../resources/HSV_ValueSet/Value1.json"
+
         if os.path.exists(default_path):
+            print("Loading preset ValueSet")
             try:
                 with open(default_path, 'r') as f:
                     preset = json.load(f)
