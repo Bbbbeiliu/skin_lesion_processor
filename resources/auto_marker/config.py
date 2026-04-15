@@ -20,5 +20,5 @@ SERVER_PORT = 5000
 MARK_SCRIPT = os.path.join(SCRIPTS_DIR, 'mark_automation.py')
 
 # 任务执行参数（可在此调整预览和标刻次数）
-PREVIEW_COUNT = 5   # 红光预览次数
-MARK_COUNT = 3      # 实际标刻次数
+PREVIEW_COUNT = 1   # 红光预览次数
+MARK_COUNT = 1      # 实际标刻次数
