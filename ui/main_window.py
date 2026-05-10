@@ -1508,7 +1508,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"保存文件失败: {str(e)}")
 
     def auto_calibrate_contours(self):
-        """自动标定轮廓尺寸（优先使用 overlay_map）"""
+        """自动标定轮廓尺寸（优先使用 overlay_map，否则从同级 image 文件夹查找）"""
         try:
             if not self.canvas.contours:
                 QMessageBox.warning(self, "警告", "没有轮廓可以标定，请先处理图像！")
@@ -1520,14 +1520,12 @@ class MainWindow(QMainWindow):
                 return
 
             # 原有逻辑（基于本地文件结构）
-            if not self.current_overlay_dir and self.image_files:
-                mask_dir = Path(self.image_files[0]).parent
-                overlay_dir = mask_dir.parent / "overlays"
-                if overlay_dir.exists():
-                    self.current_overlay_dir = str(overlay_dir)
-                else:
-                    QMessageBox.warning(self, "警告", "找不到原始图片文件夹（overlays）！")
-                    return
+            if not self.image_files:
+                QMessageBox.warning(self, "警告", "未加载任何掩膜文件！")
+                return
+
+            # 构建掩膜文件名到完整路径的映射
+            mask_path_map = {Path(p).name: p for p in self.image_files}
 
             # 创建检测器
             detector = WhiteBallMarkerDetector(ball_diameter_mm=10)
@@ -1549,23 +1547,33 @@ class MainWindow(QMainWindow):
                 if not source_image or source_image in images_processed:
                     continue
 
-                # 构建原始图片文件名
-                if '_mask' in source_image:
-                    overlay_filename = source_image.replace('_mask', '_overlay')
-                else:
-                    base_name = Path(source_image).stem
-                    overlay_filename = f"{base_name}_overlay.png"
+                # 获取掩膜文件完整路径
+                mask_full_path = mask_path_map.get(source_image)
+                if not mask_full_path:
+                    print(f"警告: 找不到掩膜文件 {source_image} 的完整路径，跳过")
+                    continue
 
-                overlay_path = Path(self.current_overlay_dir) / overlay_filename
-                if not overlay_path.exists():
-                    # 尝试其他扩展名
-                    for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
-                        alt_path = Path(self.current_overlay_dir) / f"{Path(overlay_filename).stem}{ext}"
-                        if alt_path.exists():
-                            overlay_path = alt_path
-                            break
+                mask_path = Path(mask_full_path)
+                # 原始图片所在目录：与 masks 同级的 image 文件夹
+                image_dir = mask_path.parent.parent / "image"
+                if not image_dir.exists():
+                    print(f"警告: 原始图片目录不存在: {image_dir}")
+                    continue
 
-                if not overlay_path.exists():
+                # 获取掩膜文件名主体（不含扩展名，并去除可能的 _mask 后缀）
+                base_name = mask_path.stem
+                if base_name.endswith('_mask'):
+                    base_name = base_name[:-5]
+
+                # 查找原始图片
+                overlay_path = None
+                for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff']:
+                    candidate = image_dir / f"{base_name}{ext}"
+                    if candidate.exists():
+                        overlay_path = candidate
+                        break
+                if overlay_path is None:
+                    print(f"警告: 未找到与 {source_image} 对应的原始图片在 {image_dir}")
                     continue
 
                 result = detector.process_single_image(str(overlay_path), None)
@@ -1595,7 +1603,7 @@ class MainWindow(QMainWindow):
                 self.on_contour_selected(self.canvas.selected_contour)
 
             if applied_count == 0:
-                QMessageBox.warning(self, "警告", "自动标定未成功，请检查overlay文件或手动标定。")
+                QMessageBox.warning(self, "警告", "自动标定未成功，请检查 image 文件夹是否存在且包含对应图片。")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"自动标定失败: {str(e)}")
             traceback.print_exc()
