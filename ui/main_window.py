@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGr
                              QFileDialog, QMessageBox, QFormLayout, QMenuBar, QAction,
                              QProgressBar, QApplication, QProgressBar, QRadioButton, QDockWidget, QLineEdit)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QDateTime, QPointF, QRectF, pyqtSlot, QMetaObject, Q_ARG, QObject, QThread
-from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtGui import QPalette, QColor, QPainterPath, QImage
 
 from core.contour import Contour
 # 修改导入部分
@@ -1506,6 +1506,143 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "DXF导出错误", f"{str(e)}\n\n请安装ezdxf库: pip install ezdxf")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存文件失败: {str(e)}")
+
+    def export_label_pair_images(self, output_dir: str):
+        """为每个标号生成原图+掩膜的并排图，保存到 output_dir（支持中文路径）"""
+        import cv2
+        import numpy as np
+        import os
+        from pathlib import Path
+        from collections import defaultdict
+
+        # 辅助函数：支持中文路径的 cv2.imread
+        def imread_cn(path, flags=cv2.IMREAD_COLOR):
+            """支持中文路径的图像读取"""
+            try:
+                with open(path, 'rb') as f:
+                    data = np.frombuffer(f.read(), dtype=np.uint8)
+                    img = cv2.imdecode(data, flags)
+                return img
+            except Exception as e:
+                print(f"读取图像失败 {path}: {e}")
+                return None
+
+        # 收集所有标号及其对应的掩膜文件路径
+        label_mask_map = {}  # label -> mask_path
+        for contour in self.canvas.contours:
+            label = contour.label
+            if label <= 0:
+                continue
+            if label not in label_mask_map:
+                # 从 label_metadata 中获取掩膜完整路径
+                meta = self.label_metadata.get(label, {})
+                mask_path = meta.get("image_path", "")
+                if not mask_path and self.image_files:
+                    # 尝试从 image_files 中匹配源图像名
+                    source_image = contour.source_image
+                    for f in self.image_files:
+                        if Path(f).name == source_image:
+                            mask_path = f
+                            break
+                if mask_path and os.path.exists(mask_path):
+                    label_mask_map[label] = mask_path
+                else:
+                    print(f"警告：标号 {label} 的掩膜文件不存在，跳过")
+
+        if not label_mask_map:
+            QMessageBox.warning(self, "警告", "没有找到任何有效的掩膜文件，无法生成并排图。")
+            return
+
+        # 确保输出目录存在
+        os.makedirs(output_dir, exist_ok=True)
+
+        success_count = 0
+        for label, mask_path in label_mask_map.items():
+            # 查找对应的原图路径
+            overlay_path = self._find_overlay_path_for_mask(mask_path)
+            if not overlay_path or not os.path.exists(overlay_path):
+                QMessageBox.warning(self, "警告", f"标号 {label} 对应的原图未找到，跳过。\n掩膜：{mask_path}")
+                continue
+
+            try:
+                # 使用支持中文路径的函数读取图像
+                img_overlay = imread_cn(overlay_path, cv2.IMREAD_COLOR)
+                img_mask = imread_cn(mask_path, cv2.IMREAD_GRAYSCALE)
+
+                if img_overlay is None or img_mask is None:
+                    print(f"读取图像失败：{overlay_path} 或 {mask_path}")
+                    continue
+
+                # 将掩膜转换为彩色图（三通道）
+                img_mask_color = cv2.cvtColor(img_mask, cv2.COLOR_GRAY2BGR)
+
+                # 调整高度一致（取两者最小高度，等比例缩放宽度）
+                h1, w1 = img_overlay.shape[:2]
+                h2, w2 = img_mask_color.shape[:2]
+                target_height = min(h1, h2)
+                if h1 != target_height:
+                    scale = target_height / h1
+                    new_w = int(w1 * scale)
+                    img_overlay = cv2.resize(img_overlay, (new_w, target_height))
+                if h2 != target_height:
+                    scale = target_height / h2
+                    new_w = int(w2 * scale)
+                    img_mask_color = cv2.resize(img_mask_color, (new_w, target_height))
+
+                # 水平拼接
+                h_concat = np.hstack((img_overlay, img_mask_color))
+
+                # 生成文件名：从原图文件名中提取原始名称（去掉路径和 _overlay 后缀）
+                base_name = Path(overlay_path).stem
+                if base_name.endswith("_overlay"):
+                    base_name = base_name[:-8]  # 去掉 "_overlay"
+                filename = f"{label}-{base_name}.jpg"
+                save_path = os.path.join(output_dir, filename)
+
+                # 保存为JPG（质量95）
+                cv2.imwrite(save_path, h_concat, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                success_count += 1
+                print(f"已生成：{save_path}")
+
+            except Exception as e:
+                print(f"处理标号 {label} 时出错：{str(e)}")
+
+        QMessageBox.information(self, "完成", f"成功生成 {success_count} 张并排图，保存在：{output_dir}")
+
+    def export_label_pair_images_dialog(self):
+        """弹出目录选择对话框，调用 export_label_pair_images"""
+        dir_path = QFileDialog.getExistingDirectory(self, "选择保存目录", "")
+        if dir_path:
+            self.export_label_pair_images(dir_path)
+
+    def _find_overlay_path_for_mask(self, mask_path: str) -> str:
+        """根据掩膜文件路径查找对应的原图（overlay）路径"""
+        # 优先使用 overlay_map（云端下载时已填充）
+        mask_name = Path(mask_path).name
+        if hasattr(self, 'overlay_map') and mask_name in self.overlay_map:
+            return self.overlay_map[mask_name]
+
+        # 本地推断：同目录下的 ../image 文件夹，或同级目录替换 _mask 为 _overlay
+        mask_dir = Path(mask_path).parent
+        base_name = Path(mask_path).stem
+        if base_name.endswith("_mask"):
+            base_name = base_name[:-5]
+
+        # 尝试在 ../image 目录下查找
+        image_dir = mask_dir.parent / "image"
+        if image_dir.exists():
+            for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff']:
+                candidate = image_dir / f"{base_name}{ext}"
+                if candidate.exists():
+                    return str(candidate)
+
+        # 尝试在 mask 同级目录查找 _overlay 文件
+        for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff']:
+            candidate = mask_dir / f"{base_name}_overlay{ext}"
+            if candidate.exists():
+                return str(candidate)
+
+        return ""
 
     def auto_calibrate_contours(self):
         """自动标定轮廓尺寸（优先使用 overlay_map，否则从同级 image 文件夹查找）"""

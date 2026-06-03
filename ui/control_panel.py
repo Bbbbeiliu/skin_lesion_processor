@@ -270,9 +270,12 @@ class ControlPanel(QWidget):
         btn_save.setObjectName("btn_save")
         btn_save.clicked.connect(self.main_window.save_contours)
         contour_layout.addWidget(btn_save)
-
         contour_group.setLayout(contour_layout)
         layout.addWidget(contour_group)
+
+        btn_export_pairs = QPushButton("📸 导出标号并排图")
+        btn_export_pairs.clicked.connect(self.main_window.export_label_pair_images_dialog)
+        contour_layout.addWidget(btn_export_pairs)
 
         # # 轮廓列表组
         # layout.addWidget(QLabel("📋 轮廓列表:"))
