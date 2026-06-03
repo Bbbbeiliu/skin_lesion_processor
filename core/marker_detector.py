@@ -498,8 +498,8 @@ def main():
     # 示例：使用 YOLO 备用方案，需提供模型路径
     detector = WhiteBallMarkerDetector(ball_diameter_mm=10, yolo_model_path="best.onnx")
     detector.process_folder(
-        folder_path="E:/SkinLesion/Test",
-        output_folder="E:/SkinLesion/Test/HSV_results"
+        folder_path="E:/Sam_Fss_Unet/data/Cut_test/",
+        output_folder="E:/Sam_Fss_Unet/result/Combined_results"
     )
 
 

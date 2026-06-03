@@ -115,9 +115,17 @@ class YOLOMarkerDetector:
         从图像中检测标志物，返回 (检测框列表, 比例尺)
         检测框列表格式: [[x1,y1,x2,y2,conf], ...]（已按面积排序）
         """
-        img = cv2.imread(image_path)
+        # 支持中文路径：使用二进制读取后解码
+        try:
+            with open(image_path, 'rb') as f:
+                data = np.frombuffer(f.read(), dtype=np.uint8)
+                img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        except Exception as e:
+            print(f"[YOLO] 无法读取图像: {image_path}, 错误: {e}")
+            return None, None
+
         if img is None:
-            print(f"[YOLO] 无法读取图像: {image_path}")
+            print(f"[YOLO] 无法解码图像: {image_path}")
             return None, None
 
         blob, pre_info, orig_shape = self._preprocess(img)
@@ -139,10 +147,41 @@ class YOLOMarkerDetector:
             return None, None
 
         scale_mm_per_px = self.ball_diameter_mm / pixel_diameter
-        print(f"[YOLO] 检测成功: 置信度={conf:.3f}, 像素直径={pixel_diameter:.1f}px, 比例尺={scale_mm_per_px:.6f} mm/px")
+        print(
+            f"[YOLO] 检测成功: 置信度={conf:.3f}, 像素直径={pixel_diameter:.1f}px, 比例尺={scale_mm_per_px:.6f} mm/px")
         return detections, scale_mm_per_px
 
     def get_scale_from_image(self, image_path: str) -> Optional[float]:
         """兼容旧接口，仅返回比例尺"""
         _, scale = self.get_detection_info(image_path)
         return scale
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="YOLO标志物检测标定测试")
+    parser.add_argument("--model", type=str, default='best.onnx', help="ONNX模型路径")
+    parser.add_argument("--image", type=str, default=r"E:/Sam_Fss_Unet/data/Cut_test/65bc289b1dcc113332192b50bad735d9.jpg", help="测试图像路径")
+    parser.add_argument("--conf", type=float, default=0.5, help="置信度阈值 (默认0.5)")
+    parser.add_argument("--nms", type=float, default=0.5, help="NMS阈值 (默认0.5)")
+    parser.add_argument("--diameter", type=float, default=10.0, help="标志物实际直径(mm) (默认10.0)")
+
+    args = parser.parse_args()
+
+    try:
+        detector = YOLOMarkerDetector(
+            model_path=args.model,
+            conf_threshold=args.conf,
+            nms_threshold=args.nms,
+            ball_diameter_mm=args.diameter
+        )
+        scale = detector.get_scale_from_image(args.image)
+        if scale is not None:
+            print(f"\n测试结果：像素比例尺 = {scale:.6f} mm/px")
+        else:
+            print("\n测试失败：未检测到有效标志物")
+            sys.exit(1)
+    except Exception as e:
+        print(f"测试过程中发生错误：{e}")
+        sys.exit(1)
