@@ -1,0 +1,13 @@
+{
+    "h_min": 40,
+    "h_max": 122,
+    "s_min": 5,
+    "s_max": 88,
+    "v_min": 148,
+    "v_max": 255,
+    "open_size": 3,
+    "close_size": 8,
+    "dilate_size": 3,
+    "min_area": 1000,
+    "min_circularity": 0.65
+}

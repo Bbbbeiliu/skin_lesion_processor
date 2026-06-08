@@ -6,8 +6,8 @@ import time
 
 # ========== 配置参数 ==========
 ONNX_MODEL_PATH = r"best.onnx"
-INPUT_FOLDER = r"E:/SkinLesion/Test"
-OUTPUT_FOLDER = r"E:/SkinLesion/Test/opencv_dnn_inference/results"
+INPUT_FOLDER = r"E:/Sam_Fss_Unet/data/Cut_test"
+OUTPUT_FOLDER = r"E:/Sam_Fss_Unet/result_Yolo/Cut_test"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 MODEL_INPUT_SIZE = 640

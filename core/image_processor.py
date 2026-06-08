@@ -34,7 +34,9 @@ class AdvancedImageProcessor:
             contours = []
 
             # 读取图像
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            with open(image_path, 'rb') as f:
+                data = np.frombuffer(f.read(), dtype=np.uint8)
+                image = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
             if image is None:
                 print(f"无法读取图像: {image_path}")
                 return contours

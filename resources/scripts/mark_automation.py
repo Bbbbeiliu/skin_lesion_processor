@@ -114,7 +114,7 @@ def main():
         ezd.lmc1_SetDevCfg.argtypes = []
         ezd.lmc1_SetDevCfg.restype = ctypes.c_int
 
-    # 定义 lmc1_GetPenParam4
+    # 定义 lmc1_GetPenParam4（仅调试模式使用，保留以防万一）
     ezd.lmc1_GetPenParam4.argtypes = [
         ctypes.c_int,                     # nPenNo
         ctypes.c_wchar_p,                 # sPenName
@@ -290,6 +290,19 @@ def main():
         obj_name = name_buf.value
         pen = ezd.lmc1_GetPenNumberFromEnt(obj_name)
         print(f"  对象 {i}: '{obj_name}' 笔号 = {pen}")
+
+    # ========== 新增：将所有文本对象（标号）的笔号改为 1 ==========
+    for i in range(count):
+        name_buf = ctypes.create_unicode_buffer(256)
+        ezd.lmc1_GetEntityName(i, name_buf)
+        obj_name = name_buf.value
+        text_content = ctypes.create_unicode_buffer(1024)
+        ret = ezd.lmc1_GetTextByName(obj_name, text_content)
+        if ret == 0:  # 是文本对象
+            ezd.lmc1_SetEntAllChildPen(obj_name, 1)
+            print(f"  已将文本对象 '{obj_name}' 笔号改为 1 (文本: '{text_content.value}')")
+    # ========== 新增结束 ==========
+
     if not ok:
         ezd.lmc1_Close()
         sys.exit(1)

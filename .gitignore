@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 项目特定 - 运行时生成的文件夹
+output/
+workspace/
+reports/
+analyze/
+core/temp_detection_results/
+
+# 接收文件/临时文件
+resources/received_files/
+*.dxf
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.desktop
+
+# 大文件/视频
+*.mp4
+*.zip
+
+# 临时文件
+Laser_execute_process.txt
+run_mark_automation.txt
+optimized_build.bat
+
+# 但保留重要的配置和脚本
+!requirements.txt
+!setup.py
+!laser_config.json
+!run.bat
+!main.py
