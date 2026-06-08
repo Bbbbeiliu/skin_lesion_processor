@@ -1,0 +1,28 @@
+# 皮肤病灶轮廓处理系统 - Python依赖包
+# Python 3.8+
+
+# GUI框架
+PyQt5>=5.15.0
+PyQt5-sip>=12.9.0
+
+# 图像处理
+opencv-python>=4.5.0
+opencv-contrib-python>=4.5.0
+Pillow>=8.0.0
+
+# 数值计算
+numpy>=1.19.0
+scipy>=1.5.0
+
+# 几何处理
+shapely>=1.8.0
+geomdl>=1.2.0
+
+# DXF文件处理
+ezdxf>=0.17.0
+
+# 网络请求
+requests>=2.25.0
+
+# 其他工具
+python-dateutil>=2.8.0
