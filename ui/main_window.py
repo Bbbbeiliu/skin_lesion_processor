@@ -1658,6 +1658,37 @@ class MainWindow(QMainWindow):
                 print(f"读取图像失败 {path}: {e}")
                 return None
 
+        # 辅助函数：支持中文路径的 cv2.imwrite
+        def imwrite_cn(path, img, params=None):
+            """支持中文路径的图像保存"""
+            try:
+                # 获取文件扩展名以确定编码格式
+                ext = os.path.splitext(path)[1].lower()
+                if ext == '.jpg' or ext == '.jpeg':
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
+                elif ext == '.png':
+                    encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), 9]
+                else:
+                    encode_param = []
+
+                # 如果提供了额外参数，使用它们
+                if params:
+                    encode_param = params
+
+                # 编码图像
+                success, encoded_img = cv2.imencode(ext, img, encode_param)
+                if not success:
+                    print(f"图像编码失败：{path}")
+                    return False
+
+                # 写入文件
+                with open(path, 'wb') as f:
+                    f.write(encoded_img.tobytes())
+                return True
+            except Exception as e:
+                print(f"保存图像失败 {path}: {e}")
+                return False
+
         # 按患者分组：patient_name -> [(contour, mask_path, overlay_path), ...]
         patient_data = defaultdict(list)
 
@@ -1819,7 +1850,7 @@ class MainWindow(QMainWindow):
                     save_path = os.path.join(output_dir, filename)
 
                     # 保存为JPG（质量95）
-                    cv2.imwrite(save_path, result, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                    imwrite_cn(save_path, result)
                     success_count += 1
                     print(f"已生成：{save_path}")
 

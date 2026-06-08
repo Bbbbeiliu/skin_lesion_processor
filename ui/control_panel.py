@@ -273,7 +273,7 @@ class ControlPanel(QWidget):
         contour_group.setLayout(contour_layout)
         layout.addWidget(contour_group)
 
-        btn_export_pairs = QPushButton("📸 导出标号并排图")
+        btn_export_pairs = QPushButton("📸 导出蒙版高亮图")
         btn_export_pairs.clicked.connect(self.main_window.export_label_pair_images_dialog)
         contour_layout.addWidget(btn_export_pairs)
 
