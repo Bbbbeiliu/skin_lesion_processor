@@ -35,6 +35,10 @@ class Contour:
         self.nurbs_curve = None  # 存储NURBS曲线对象
         self.precision = 0.5  # 拟合精度
         self.control_points = 50  # 默认控制点数
+        # 新增：标签位置相关属性
+        self.patient_name = ""  # 病人名字
+        self.contour_index = 0  # 该病人的第几个轮廓（从1开始）
+        self.label_offset_mm = 3.0  # 标签距离轮廓底部的偏移量（毫米）
         # 计算初始包围盒
         self.calculate_bounding_box()
 
@@ -77,6 +81,78 @@ class Contour:
         center_x = self.position.x() + width / 2
         center_y = self.position.y() + height / 2
         return QRectF(center_x - width / 2, center_y - height / 2, width, height)
+
+    def get_display_rect_with_label(self, pixels_per_cm: float, label_height_mm: float = 8.0) -> QRectF:
+        """
+        获取包含标签空间的显示矩形。
+
+        该方法返回轮廓和标签的合并边界，用于排样算法的碰撞检测。
+        标签可能比轮廓更宽（例如患者名较长时），因此需要合并两个矩形。
+
+        :param pixels_per_cm: 像素/厘米
+        :param label_height_mm: 标签区域总高度（毫米，未使用，保留以兼容）
+        :return: 包含轮廓和标签的显示矩形
+        """
+        base_rect = self.get_display_rect()
+        if base_rect.isNull():
+            return QRectF()
+
+        # 获取标签的实际边界（使用 get_label_bounds）
+        # 注意：字体大小需要与 canvas_widget.py 中绘制时的值一致（3.0mm）
+        label_bounds = self.get_label_bounds(
+            pixels_per_cm=pixels_per_cm,
+            font_size_mm=3.0,  # 与 canvas_widget.label_font_size_mm 一致
+            bg_padding=4.0
+        )
+
+        # 如果标签边界无效，只返回轮廓矩形
+        if label_bounds.isNull() or label_bounds.width() <= 0 or label_bounds.height() <= 0:
+            return base_rect
+
+        # 合并轮廓矩形和标签矩形
+        # 使用 normalized() 确保矩形坐标规范（宽高为正）
+        combined_rect = base_rect.united(label_bounds).normalized()
+
+        return combined_rect
+
+    def get_label_bounds(self, pixels_per_cm: float, font_size_mm: float = 3.0,
+                         bg_padding: float = 4.0) -> QRectF:
+        """
+        获取标签文本的实际绘制边界（用于精确的碰撞检测）。
+        标签位于轮廓下方中心位置。
+
+        :param pixels_per_cm: 像素/厘米
+        :param font_size_mm: 字体大小（毫米）
+        :param bg_padding: 背景内边距（像素）
+        :return: 标签的边界矩形（显示坐标系）
+        """
+        if not self.nurbs_points or len(self.nurbs_points) < 3:
+            return QRectF()
+
+        # 计算标签位置（中心点）
+        label_pos = self.get_label_position_below(pixels_per_cm, font_size_mm, self.label_offset_mm)
+        if label_pos.x() == 0 and label_pos.y() == 0:
+            return QRectF()
+
+        # 估算文本大小（像素）
+        font_size_px = font_size_mm * pixels_per_cm / 10
+        font_size_px = max(6, min(30, font_size_px))
+
+        # 估算文本宽度：假设每个字符宽度约为字体大小的 0.6 倍
+        label_text = self.get_full_label_text()
+        text_width_px = len(label_text) * font_size_px * 0.6
+        # 文本高度约为字体大小的 1.2 倍（行高）
+        text_height_px = font_size_px * 1.2
+
+        # 计算标签边界（包含内边距）
+        label_bounds = QRectF(
+            label_pos.x() - text_width_px / 2 - bg_padding,
+            label_pos.y() - text_height_px / 2 - bg_padding,
+            text_width_px + bg_padding * 2,
+            text_height_px + bg_padding * 2
+        )
+
+        return label_bounds
 
     def get_geometric_center(self) -> QPointF:
         if not self.nurbs_points:
@@ -196,6 +272,50 @@ class Contour:
             return best_point, best_vertical_dist
         else:
             return None, 0
+
+    def get_label_position_below(self, pixels_per_cm: float, font_size_mm: float = 3.0,
+                                 offset_mm: float = 3.0) -> QPointF:
+        """
+        计算轮廓下方标号位置，返回显示坐标系中的 QPointF。
+        标签位于轮廓包围盒下方中心位置。
+
+        :param pixels_per_cm: 像素/厘米
+        :param font_size_mm: 字体大小（毫米），用于计算标签区域高度
+        :param offset_mm: 标签距离轮廓底部的偏移量（毫米）
+        :return: QPointF 显示坐标，如果轮廓无效返回 QPointF(0, 0)
+        """
+        if not self.nurbs_points or len(self.nurbs_points) < 3:
+            return QPointF(0, 0)
+
+        display_rect = self.get_display_rect()
+        if display_rect.isNull():
+            return QPointF(0, 0)
+
+        # 计算标签位置：轮廓包围盒底部中心向下偏移
+        # X坐标：包围盒中心
+        label_x = display_rect.center().x()
+
+        # Y坐标：包围盒底部 + 偏移量（转换为像素）
+        offset_px = offset_mm * pixels_per_cm / 10  # 毫米转像素
+        label_y = display_rect.bottom() + offset_px
+
+        return QPointF(label_x, label_y)
+
+    def get_full_label_text(self) -> str:
+        """
+        获取完整的标签文本，格式：病人名字-轮廓序号
+        例如："张三-1" 表示张三的第1个轮廓
+
+        为避免标签过长遮挡轮廓，患者名限制为4个字符
+
+        :return: 完整标签文本
+        """
+        if self.patient_name and self.contour_index > 0:
+            # 限制患者名长度为4个字符，避免标签过大
+            short_name = self.patient_name[:4]
+            return f"{short_name}-{self.contour_index}"
+        # 回退到旧格式（仅标号）
+        return str(self.label) if self.label > 0 else ""
 
     # def set_size(self, width_cm: float, height_cm: float, pixels_per_cm: float):
     #     """设置包围盒大小（厘米单位）"""

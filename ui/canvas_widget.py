@@ -258,13 +258,14 @@ class CanvasWidget(QWidget):
         try:
             painter.save()
 
-            # 获取标号位置和竖直距离
-            label_pos, dist_px = contour.get_label_position(
+            # 使用新的位置计算方法：标签在轮廓下方
+            label_pos = contour.get_label_position_below(
                 pixels_per_cm=self.pixels_per_cm,
                 font_size_mm=self.label_font_size_mm,
-                min_size_mm=self.label_min_size_mm
+                offset_mm=contour.label_offset_mm
             )
-            if label_pos is None or dist_px <= 0:
+
+            if label_pos.x() == 0 and label_pos.y() == 0:
                 painter.restore()
                 return
 
@@ -277,13 +278,28 @@ class CanvasWidget(QWidget):
             font.setBold(True)
             painter.setFont(font)
 
-            label_text = str(contour.label) if contour.label > 0 else ""
+            # 获取完整标签文本（包含病人名字和序号）
+            label_text = contour.get_full_label_text()
             if not label_text:
                 painter.restore()
                 return
 
             fm = QFontMetrics(font)
             text_rect = fm.boundingRect(label_text)
+
+            # 绘制标签背景（白色半透明圆角矩形）
+            bg_padding = 4
+            bg_rect = QRectF(
+                label_pos.x() - text_rect.width() / 2 - bg_padding,
+                label_pos.y() - text_rect.height() / 2 - bg_padding,
+                text_rect.width() + bg_padding * 2,
+                text_rect.height() + bg_padding * 2
+            )
+            painter.setBrush(QBrush(QColor(255, 255, 255, 200)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, 3, 3)
+
+            # 绘制标签文本（居中对齐）
             draw_rect = QRectF(
                 label_pos.x() - text_rect.width() / 2,
                 label_pos.y() - text_rect.height() / 2,

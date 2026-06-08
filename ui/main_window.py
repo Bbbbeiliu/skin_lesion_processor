@@ -77,6 +77,8 @@ class MainWindow(QMainWindow):
         self.label_metadata: Dict[int, dict] = {}  # 标号元数据
         self.next_label = 1  # 添加：下一个标号
         self.next_contour_id = 0  # 全局唯一轮廓ID计数器
+        # 新增：病人名字管理
+        self.patient_contour_counts: Dict[str, int] = {}  # 每个病人的轮廓数量计数
         self.pages_contours = []  # 分页后的轮廓列表
         self.current_page = 0  # 当前显示的页码
         # self.current_precision = 0.5  # 当前拟合精度
@@ -244,12 +246,57 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已添加 {len(new_contours)} 个新轮廓，并重新排样")
         return True
 
-    def _create_contour_from_points(self, points: np.ndarray, source_image: str, label: int) -> Contour:
+    def _create_contour_from_points(self, points: np.ndarray, source_image: str, label: int,
+                                   image_path: str = "", patient_name: str = "") -> Contour:
         """
         根据原始轮廓点创建Contour对象，自动分配唯一ID，并进行NURBS拟合。
+
+        :param points: 原始轮廓点
+        :param source_image: 来源图像名称
+        :param label: 标号
+        :param image_path: 图像完整路径（用于提取病人名字）
+        :param patient_name: 病人名字（可选，优先级高于从路径推断）
         """
         self.next_contour_id += 1
         contour = Contour(points, self.next_contour_id, source_image, label)
+
+        # 设置病人名字和轮廓序号
+        if patient_name:
+            contour.patient_name = patient_name
+        elif image_path:
+            # 从完整路径提取病人名字：张三/mask/12334_mask.png -> "张三"
+            path_obj = Path(image_path)
+            # 获取文件所在的目录
+            parent_dir = path_obj.parent.name
+            # 如果父目录是 'mask'，则取上一级目录名作为病人名字
+            if parent_dir == 'mask' or parent_dir == 'masks':
+                grandparent = path_obj.parent.parent
+                if grandparent and grandparent.name:
+                    contour.patient_name = grandparent.name
+                else:
+                    # 回退：使用文件名去掉扩展名和后缀
+                    base_name = path_obj.stem
+                    if base_name.endswith('_mask'):
+                        base_name = base_name[:-5]
+                    contour.patient_name = base_name
+            else:
+                # 回退：使用文件名去掉扩展名和后缀
+                base_name = path_obj.stem
+                if base_name.endswith('_mask'):
+                    base_name = base_name[:-5]
+                contour.patient_name = base_name
+        else:
+            # 从 source_image 推断病人名字（去掉扩展名和可能的 _mask 后缀）
+            base_name = Path(source_image).stem
+            if base_name.endswith('_mask'):
+                base_name = base_name[:-5]
+            contour.patient_name = base_name
+
+        # 更新该病人的轮廓计数
+        if contour.patient_name not in self.patient_contour_counts:
+            self.patient_contour_counts[contour.patient_name] = 0
+        self.patient_contour_counts[contour.patient_name] += 1
+        contour.contour_index = self.patient_contour_counts[contour.patient_name]
 
         # 简化轮廓（可选，与原流程一致）
         simplified_points = AdvancedImageProcessor.simplify_contour(contour.original_points, tolerance=2.0)
@@ -328,7 +375,7 @@ class MainWindow(QMainWindow):
             for contour_points, _ in contours_data:
                 if len(contour_points) < 3:
                     continue
-                new_contour = self._create_contour_from_points(contour_points, image_name, label)
+                new_contour = self._create_contour_from_points(contour_points, image_name, label, image_path=image_path)
                 new_contours.append(new_contour)
 
         return new_contours, has_processed
@@ -549,6 +596,7 @@ class MainWindow(QMainWindow):
                 self.next_label = 1
                 self.label_to_image_map.clear()
                 self.canvas.label_to_image_mapping.clear()
+                self.patient_contour_counts.clear()  # 清空病人计数器
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载图像失败: {str(e)}")
@@ -565,6 +613,7 @@ class MainWindow(QMainWindow):
             self.label_to_image_map.clear()
             self.canvas.label_to_image_mapping.clear()
             self.label_metadata.clear()  # 清空元数据
+            self.patient_contour_counts.clear()  # 清空病人计数器
             self.next_label = 1
             self.next_contour_id = 0
 
@@ -613,7 +662,7 @@ class MainWindow(QMainWindow):
                     if len(contour_points) < 3:
                         continue
                     simplified_points = AdvancedImageProcessor.simplify_contour(contour_points, tolerance=2.0)
-                    contour = self._create_contour_from_points(simplified_points, image_name, label)
+                    contour = self._create_contour_from_points(simplified_points, image_name, label, image_path=image_path)
                     all_contours.append(contour)
 
                 QApplication.processEvents()  # 更新UI
@@ -674,8 +723,11 @@ class MainWindow(QMainWindow):
             center_x = self.canvas.canvas_width_px / 2
             center_y = self.canvas.canvas_height_px / 2
             margin_px = margin_mm * (pixels_per_cm / 10)  # 间距转换为像素
+            # 标签区域高度计算：偏移量(3mm) + 文本高度的一半(~1.8mm) + 内边距(~1mm) ≈ 6mm
+            # 使用 9mm 确保有足够空间包含标签和文本
+            label_height_mm = 9.0  # 标签区域高度（毫米）
 
-            # 构建轮廓多边形数据
+            # 构建轮廓多边形数据（包含标签区域）
             contours_data = []
             total = len(self.canvas.contours)
             for idx, contour in enumerate(self.canvas.contours):
@@ -688,6 +740,10 @@ class MainWindow(QMainWindow):
                 display_rect = contour.get_display_rect()
                 if display_rect.isNull():
                     continue
+
+                # 获取包含标签的包围盒
+                display_rect_with_label = contour.get_display_rect_with_label(pixels_per_cm, label_height_mm)
+
                 pts = []
                 scale = contour.scale
                 bbox = contour.bounding_box
@@ -695,13 +751,32 @@ class MainWindow(QMainWindow):
                     x_px = display_rect.left() + (p.x() - bbox.left()) * scale
                     y_px = display_rect.top() + (p.y() - bbox.top()) * scale
                     pts.append((x_px, y_px))
+
+                # 创建轮廓多边形
                 original_poly = Polygon(pts)
                 if not original_poly.is_valid:
                     original_poly = original_poly.buffer(0)
                     # 如果变为 MultiPolygon，取面积最大的
                     if original_poly.geom_type == 'MultiPolygon':
                         original_poly = max(original_poly.geoms, key=lambda p: p.area)
-                poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+
+                # 创建包含标签区域的多边形（用于排样碰撞检测）
+                # 标签区域是一个矩形，位于轮廓下方
+                label_rect_coords = [
+                    (display_rect_with_label.left(), display_rect.bottom()),  # 左下
+                    (display_rect_with_label.right(), display_rect.bottom()),  # 右下
+                    (display_rect_with_label.right(), display_rect_with_label.bottom()),  # 右上（包含标签）
+                    (display_rect_with_label.left(), display_rect_with_label.bottom()),  # 左上（包含标签）
+                ]
+                label_poly = Polygon(label_rect_coords)
+
+                # 合并轮廓和标签区域
+                poly_with_label = original_poly.union(label_poly)
+                if not poly_with_label.is_valid:
+                    poly_with_label = poly_with_label.buffer(0)
+
+                # 添加间距
+                poly_with_margin = poly_with_label.buffer(margin_px, join_style=2)
                 if not poly_with_margin.is_valid:
                     poly_with_margin = poly_with_margin.buffer(0)
                     if poly_with_margin.geom_type == 'MultiPolygon':
@@ -942,7 +1017,12 @@ class MainWindow(QMainWindow):
                     failed.append(item)
             return placed, failed
 
-        # ---------- 1. 重新计算当前页所有轮廓的实时多边形 ----------
+        # 标签区域高度（毫米）
+        # 标签区域高度计算：偏移量(3mm) + 文本高度的一半(~1.8mm) + 内边距(~1mm) ≈ 6mm
+        # 使用 9mm 确保有足够空间包含标签和文本
+        label_height_mm = 9.0
+
+        # ---------- 1. 重新计算当前页所有轮廓的实时多边形（包含标签区域）----------
         current_page_data = self.pages_contours[current_idx]
         for item in current_page_data:
             contour = item['contour']
@@ -951,6 +1031,10 @@ class MainWindow(QMainWindow):
             display_rect = contour.get_display_rect()
             if display_rect.isNull():
                 continue
+
+            # 获取包含标签的包围盒
+            display_rect_with_label = contour.get_display_rect_with_label(pixels_per_cm, label_height_mm)
+
             pts = []
             scale = contour.scale
             bbox = contour.bounding_box
@@ -961,7 +1045,22 @@ class MainWindow(QMainWindow):
             original_poly = Polygon(pts)
             if not original_poly.is_valid:
                 original_poly = original_poly.buffer(0)
-            poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+
+            # 创建包含标签区域的多边形（用于排样碰撞检测）
+            label_rect_coords = [
+                (display_rect_with_label.left(), display_rect.bottom()),
+                (display_rect_with_label.right(), display_rect.bottom()),
+                (display_rect_with_label.right(), display_rect_with_label.bottom()),
+                (display_rect_with_label.left(), display_rect_with_label.bottom()),
+            ]
+            label_poly = Polygon(label_rect_coords)
+
+            # 合并轮廓和标签区域
+            poly_with_label = original_poly.union(label_poly)
+            if not poly_with_label.is_valid:
+                poly_with_label = poly_with_label.buffer(0)
+
+            poly_with_margin = poly_with_label.buffer(margin_px, join_style=2)
             if not poly_with_margin.is_valid:
                 poly_with_margin = poly_with_margin.buffer(0)
             item['original_poly'] = original_poly
@@ -1013,7 +1112,7 @@ class MainWindow(QMainWindow):
         # 否则，获取最后一页的数据
         last_page_data = self.pages_contours[last_idx]
 
-        # ---------- 4. 重新计算最后一页轮廓的实时多边形 ----------
+        # ---------- 4. 重新计算最后一页轮廓的实时多边形（包含标签区域）----------
         for item in last_page_data:
             contour = item['contour']
             if not contour.nurbs_points:
@@ -1021,6 +1120,10 @@ class MainWindow(QMainWindow):
             display_rect = contour.get_display_rect()
             if display_rect.isNull():
                 continue
+
+            # 获取包含标签的包围盒
+            display_rect_with_label = contour.get_display_rect_with_label(pixels_per_cm, label_height_mm)
+
             pts = []
             scale = contour.scale
             bbox = contour.bounding_box
@@ -1031,7 +1134,22 @@ class MainWindow(QMainWindow):
             original_poly = Polygon(pts)
             if not original_poly.is_valid:
                 original_poly = original_poly.buffer(0)
-            poly_with_margin = original_poly.buffer(margin_px, join_style=2)
+
+            # 创建包含标签区域的多边形
+            label_rect_coords = [
+                (display_rect_with_label.left(), display_rect.bottom()),
+                (display_rect_with_label.right(), display_rect.bottom()),
+                (display_rect_with_label.right(), display_rect_with_label.bottom()),
+                (display_rect_with_label.left(), display_rect_with_label.bottom()),
+            ]
+            label_poly = Polygon(label_rect_coords)
+
+            # 合并轮廓和标签区域
+            poly_with_label = original_poly.union(label_poly)
+            if not poly_with_label.is_valid:
+                poly_with_label = poly_with_label.buffer(0)
+
+            poly_with_margin = poly_with_label.buffer(margin_px, join_style=2)
             if not poly_with_margin.is_valid:
                 poly_with_margin = poly_with_margin.buffer(0)
             item['original_poly'] = original_poly
@@ -1085,6 +1203,9 @@ class MainWindow(QMainWindow):
         self.canvas.label_to_image_mapping.clear()
         self.next_label = 1
 
+        # 清空病人计数器
+        self.patient_contour_counts.clear()
+
         # 清空分页数据
         self.pages_contours = []
         self.current_page = 0
@@ -1095,8 +1216,11 @@ class MainWindow(QMainWindow):
     def on_contour_selected(self, contour):
         if contour:
             self.control_panel.selection_group.setEnabled(True)
-            label_info = f"标号 {contour.label}" if contour.label > 0 else "无标号"
-            self.control_panel.lbl_selected_info.setText(f"{label_info} - 轮廓 {contour.id} ({contour.source_image})")
+            # 显示完整标签信息（包含病人名字和序号）
+            full_label = contour.get_full_label_text()
+            label_info = f"标签 {full_label}" if full_label else "无标签"
+            patient_info = f"{contour.patient_name}" if contour.patient_name else "未知"
+            self.control_panel.lbl_selected_info.setText(f"{label_info} - 病人: {patient_info} - 轮廓 {contour.id}")
             rect = contour.get_display_rect()
             width_cm = rect.width() / self.canvas.pixels_per_cm
             height_cm = rect.height() / self.canvas.pixels_per_cm
@@ -1508,7 +1632,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"保存文件失败: {str(e)}")
 
     def export_label_pair_images(self, output_dir: str):
-        """为每个标号生成原图+掩膜的并排图，保存到 output_dir（支持中文路径）"""
+        """
+        按患者生成蒙版高亮图：
+        1. 同一患者的所有轮廓合并在一张图中
+        2. 掩膜区域保持原样，背景区域变暗
+        3. 标号只显示序号（如 1, 2, 3），不显示患者名
+        4. 文件命名：{患者名}-{序号}.jpg
+        保存到 output_dir（支持中文路径）
+        """
         import cv2
         import numpy as np
         import os
@@ -1527,87 +1658,176 @@ class MainWindow(QMainWindow):
                 print(f"读取图像失败 {path}: {e}")
                 return None
 
-        # 收集所有标号及其对应的掩膜文件路径
-        label_mask_map = {}  # label -> mask_path
-        for contour in self.canvas.contours:
+        # 按患者分组：patient_name -> [(contour, mask_path, overlay_path), ...]
+        patient_data = defaultdict(list)
+
+        # 获取所有页面的轮廓（不只是当前画布）
+        all_contours = []
+        if hasattr(self, 'pages_contours') and self.pages_contours:
+            for page in self.pages_contours:
+                for item in page:
+                    all_contours.append(item['contour'])
+        else:
+            # 如果没有分页，使用当前画布的轮廓
+            all_contours = self.canvas.contours
+
+        for contour in all_contours:
             label = contour.label
             if label <= 0:
                 continue
-            if label not in label_mask_map:
-                # 从 label_metadata 中获取掩膜完整路径
-                meta = self.label_metadata.get(label, {})
-                mask_path = meta.get("image_path", "")
-                if not mask_path and self.image_files:
-                    # 尝试从 image_files 中匹配源图像名
-                    source_image = contour.source_image
-                    for f in self.image_files:
-                        if Path(f).name == source_image:
-                            mask_path = f
-                            break
-                if mask_path and os.path.exists(mask_path):
-                    label_mask_map[label] = mask_path
-                else:
-                    print(f"警告：标号 {label} 的掩膜文件不存在，跳过")
 
-        if not label_mask_map:
-            QMessageBox.warning(self, "警告", "没有找到任何有效的掩膜文件，无法生成并排图。")
+            # 获取患者名和轮廓序号
+            patient_name = contour.patient_name or f"患者{label}"
+            contour_index = contour.contour_index if contour.contour_index > 0 else 1
+
+            # 从 label_metadata 中获取掩膜完整路径
+            meta = self.label_metadata.get(label, {})
+            mask_path = meta.get("image_path", "")
+            if not mask_path and self.image_files:
+                # 尝试从 image_files 中匹配源图像名
+                source_image = contour.source_image
+                for f in self.image_files:
+                    if Path(f).name == source_image:
+                        mask_path = f
+                        break
+
+            if not mask_path or not os.path.exists(mask_path):
+                print(f"警告：标号 {label} 的掩膜文件不存在，跳过")
+                continue
+
+            # 查找对应的原图路径
+            overlay_path = self._find_overlay_path_for_mask(mask_path)
+            if not overlay_path or not os.path.exists(overlay_path):
+                print(f"警告：标号 {label} 对应的原图未找到，跳过")
+                continue
+
+            patient_data[patient_name].append({
+                "contour": contour,
+                "mask_path": mask_path,
+                "overlay_path": overlay_path,
+                "label": contour_index  # 使用 contour_index（该患者的第几个轮廓）
+            })
+
+        if not patient_data:
+            QMessageBox.warning(self, "警告", "没有找到任何有效的掩膜文件，无法生成蒙版高亮图。")
             return
 
         # 确保输出目录存在
         os.makedirs(output_dir, exist_ok=True)
 
+        # 蒙版参数
+        DIM_FACTOR = 0.4  # 非掩膜区域的暗化系数（0.4 = 40%亮度）
+
         success_count = 0
-        for label, mask_path in label_mask_map.items():
-            # 查找对应的原图路径
-            overlay_path = self._find_overlay_path_for_mask(mask_path)
-            if not overlay_path or not os.path.exists(overlay_path):
-                QMessageBox.warning(self, "警告", f"标号 {label} 对应的原图未找到，跳过。\n掩膜：{mask_path}")
-                continue
+        patient_index = 0
 
-            try:
-                # 使用支持中文路径的函数读取图像
-                img_overlay = imread_cn(overlay_path, cv2.IMREAD_COLOR)
-                img_mask = imread_cn(mask_path, cv2.IMREAD_GRAYSCALE)
+        for patient_name, contours_data in patient_data.items():
+            patient_index += 1
 
-                if img_overlay is None or img_mask is None:
-                    print(f"读取图像失败：{overlay_path} 或 {mask_path}")
-                    continue
+            # 检查该患者是否有多个原图
+            # 按原图路径分组
+            image_groups = defaultdict(list)
+            for data in contours_data:
+                image_groups[data["overlay_path"]].append(data)
 
-                # 将掩膜转换为彩色图（三通道）
-                img_mask_color = cv2.cvtColor(img_mask, cv2.COLOR_GRAY2BGR)
+            # 为每个患者的每张图生成输出
+            for img_idx, (overlay_path, group_data) in enumerate(image_groups.items(), 1):
+                try:
+                    # 读取原图
+                    img_original = imread_cn(overlay_path, cv2.IMREAD_COLOR)
+                    if img_original is None:
+                        print(f"读取原图失败：{overlay_path}")
+                        continue
 
-                # 调整高度一致（取两者最小高度，等比例缩放宽度）
-                h1, w1 = img_overlay.shape[:2]
-                h2, w2 = img_mask_color.shape[:2]
-                target_height = min(h1, h2)
-                if h1 != target_height:
-                    scale = target_height / h1
-                    new_w = int(w1 * scale)
-                    img_overlay = cv2.resize(img_overlay, (new_w, target_height))
-                if h2 != target_height:
-                    scale = target_height / h2
-                    new_w = int(w2 * scale)
-                    img_mask_color = cv2.resize(img_mask_color, (new_w, target_height))
+                    h, w = img_original.shape[:2]
 
-                # 水平拼接
-                h_concat = np.hstack((img_overlay, img_mask_color))
+                    # 创建合并掩膜（所有轮廓的掩膜）
+                    combined_mask = np.zeros((h, w), dtype=np.uint8)
 
-                # 生成文件名：从原图文件名中提取原始名称（去掉路径和 _overlay 后缀）
-                base_name = Path(overlay_path).stem
-                if base_name.endswith("_overlay"):
-                    base_name = base_name[:-8]  # 去掉 "_overlay"
-                filename = f"{label}-{base_name}.jpg"
-                save_path = os.path.join(output_dir, filename)
+                    # 读取并合并所有掩膜
+                    for data in group_data:
+                        mask_path = data["mask_path"]
+                        img_mask = imread_cn(mask_path, cv2.IMREAD_GRAYSCALE)
 
-                # 保存为JPG（质量95）
-                cv2.imwrite(save_path, h_concat, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-                success_count += 1
-                print(f"已生成：{save_path}")
+                        if img_mask is None:
+                            print(f"读取掩膜失败：{mask_path}")
+                            continue
 
-            except Exception as e:
-                print(f"处理标号 {label} 时出错：{str(e)}")
+                        # 调整掩膜尺寸
+                        if img_mask.shape[:2] != (h, w):
+                            img_mask = cv2.resize(img_mask, (w, h))
 
-        QMessageBox.information(self, "完成", f"成功生成 {success_count} 张并排图，保存在：{output_dir}")
+                        # 合并掩膜
+                        combined_mask = cv2.bitwise_or(combined_mask, img_mask)
+
+                    # 创建暗色版本
+                    img_dimmed = (img_original * DIM_FACTOR).astype(np.uint8)
+
+                    # 创建二值掩膜
+                    mask_binary = (combined_mask > 0).astype(np.uint8)
+
+                    # 合成：掩膜区域保持原图，其他区域使用暗色版本
+                    result = np.where(mask_binary[:, :, np.newaxis] == 1, img_original, img_dimmed).astype(np.uint8)
+
+                    # 绘制所有轮廓的标号（仅序号）
+                    font_scale = max(0.8, min(2.0, w / 600))
+                    font_thickness = max(1, int(font_scale * 2))
+
+                    for data in group_data:
+                        contour = data["contour"]
+                        label_text = str(data["label"])  # 只显示序号（contour_index）
+
+                        # 使用轮廓的原始点计算中心位置
+                        # 这样每个轮廓都有自己独立的中心，而不是依赖掩膜文件
+                        if hasattr(contour, 'original_points') and contour.original_points is not None:
+                            points = contour.original_points
+                            if len(points) > 0:
+                                # 计算轮廓点的平均位置（中心）
+                                # 原始点坐标系需要映射到原图坐标系
+                                # 轮廓的 bounding_box 在原图中的位置
+                                min_x = np.min(points[:, 0])
+                                max_x = np.max(points[:, 0])
+                                min_y = np.min(points[:, 1])
+                                max_y = np.max(points[:, 1])
+
+                                # 轮廓中心（在原始点坐标系中）
+                                cx_original = (min_x + max_x) / 2
+                                cy_original = (min_y + max_y) / 2
+
+                                # 获取文本大小
+                                text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)[0]
+
+                                # 直接使用原始坐标作为图像坐标（假设两者一致）
+                                # 如果坐标不一致，可能需要根据实际情况调整
+                                cx = int(cx_original)
+                                cy = int(cy_original)
+
+                                # 确保坐标在图像范围内
+                                cx = max(text_size[0]//2, min(w - text_size[0]//2, cx))
+                                cy = max(text_size[1]//2, min(h - text_size[1]//2, cy))
+
+                                # 绘制阴影
+                                cv2.putText(result, label_text, (cx - text_size[0]//2 + 2, cy + text_size[1]//2 + 2),
+                                           cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), font_thickness + 2)
+
+                                # 绘制白色文本
+                                cv2.putText(result, label_text, (cx - text_size[0]//2, cy + text_size[1]//2),
+                                           cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+
+                    # 生成文件名：{患者名}-{序号}.jpg
+                    filename = f"{patient_name}-{img_idx}.jpg"
+                    save_path = os.path.join(output_dir, filename)
+
+                    # 保存为JPG（质量95）
+                    cv2.imwrite(save_path, result, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                    success_count += 1
+                    print(f"已生成：{save_path}")
+
+                except Exception as e:
+                    print(f"处理患者 {patient_name} 时出错：{str(e)}")
+                    traceback.print_exc()
+
+        QMessageBox.information(self, "完成", f"成功生成 {success_count} 张蒙版高亮图，保存在：{output_dir}")
 
     def export_label_pair_images_dialog(self):
         """弹出目录选择对话框，调用 export_label_pair_images"""

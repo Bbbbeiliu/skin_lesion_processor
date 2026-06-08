@@ -96,18 +96,22 @@ class DXFExporter:
 
             # ---------- 导出标号（与画布逻辑一致）----------
             if contour.label > 0:
-                # 使用与画布相同的定位方法
-                label_pos, dist_px = contour.get_label_position(
+                # 使用新的定位方法：标签在轮廓下方
+                label_pos = contour.get_label_position_below(
                     pixels_per_cm=pixels_per_cm,
                     font_size_mm=label_font_size_mm,
-                    min_size_mm=label_min_size_mm
+                    offset_mm=contour.label_offset_mm
                 )
-                if label_pos is not None and dist_px > 0:
+
+                if label_pos.x() != 0 or label_pos.y() != 0:
                     label_x_mm = label_pos.x() * 10 / pixels_per_cm * SCALE_FACTOR
                     label_y_mm = (150 - label_pos.y() * 10 / pixels_per_cm) * SCALE_FACTOR
 
+                    # 获取完整标签文本（包含病人名字和序号）
+                    label_text = contour.get_full_label_text()
+
                     text = msp.add_text(
-                        str(contour.label),
+                        label_text,
                         dxfattribs={
                             'layer': 'LABELS',
                             'height': label_font_size_mm * SCALE_FACTOR,  # 标号字体高度也缩放
@@ -115,7 +119,7 @@ class DXFExporter:
                         }
                     )
                     text.set_placement((label_x_mm, label_y_mm), align=TextEntityAlignment.MIDDLE_CENTER)
-                    print(f"  标号 '{contour.label}' 已添加，缩放后位置 ({label_x_mm:.1f}, {label_y_mm:.1f})mm")
+                    print(f"  标号 '{label_text}' 已添加，缩放后位置 ({label_x_mm:.1f}, {label_y_mm:.1f})mm")
                 else:
                     print(f"  轮廓 {contour.label} 无合适标号位置，跳过")
 
