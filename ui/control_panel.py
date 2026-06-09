@@ -174,18 +174,6 @@ class ControlPanel(QWidget):
         display_group = QGroupBox("显示选项")
         display_layout = QVBoxLayout()
 
-        cb_show_original = QCheckBox("显示原始轮廓")
-        cb_show_original.setObjectName("cb_show_original")
-        cb_show_original.setChecked(False)
-        cb_show_original.toggled.connect(self.main_window.toggle_original_contour)
-        display_layout.addWidget(cb_show_original)
-
-        cb_show_nurbs = QCheckBox("显示NURBS曲线")
-        cb_show_nurbs.setObjectName("cb_show_nurbs")
-        cb_show_nurbs.setChecked(True)
-        cb_show_nurbs.toggled.connect(self.main_window.toggle_nurbs_curve)
-        display_layout.addWidget(cb_show_nurbs)
-
         cb_show_bounding_box = QCheckBox("显示选中轮廓的包围盒")
         cb_show_bounding_box.setObjectName("cb_show_bounding_box")
         cb_show_bounding_box.setChecked(True)

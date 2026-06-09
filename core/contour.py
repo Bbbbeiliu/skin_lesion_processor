@@ -4,6 +4,7 @@
 import numpy as np
 from PyQt5.QtCore import QPointF, QRectF
 from PyQt5.QtGui import QColor, QBrush, QPen
+from typing import List
 import random
 import math
 
@@ -35,6 +36,9 @@ class Contour:
         self.nurbs_curve = None  # 存储NURBS曲线对象
         self.precision = 0.5  # 拟合精度
         self.control_points = 50  # 默认控制点数
+        # --- 新增：质量评估和输出方式 ---
+        self.use_nurbs_for_export = True  # DXF导出时是否使用NURBS点（True=NURBS, False=原始点）
+        self.fit_quality = None  # 拟合质量评估结果 dict
         # 新增：标签位置相关属性
         self.patient_name = ""  # 病人名字
         self.contour_index = 0  # 该病人的第几个轮廓（从1开始）
@@ -126,7 +130,7 @@ class Contour:
         :param bg_padding: 背景内边距（像素）
         :return: 标签的边界矩形（显示坐标系）
         """
-        if not self.nurbs_points or len(self.nurbs_points) < 3:
+        if len(self.original_points) < 3:
             return QRectF()
 
         # 计算标签位置（中心点）
@@ -155,11 +159,14 @@ class Contour:
         return label_bounds
 
     def get_geometric_center(self) -> QPointF:
-        if not self.nurbs_points:
+        if len(self.original_points) < 3:
             return QPointF(0, 0)
-        sum_x = sum(p.x() for p in self.nurbs_points)
-        sum_y = sum(p.y() for p in self.nurbs_points)
-        n = len(self.nurbs_points)
+        pts = self.original_points.squeeze()
+        if pts.ndim != 2:
+            return QPointF(0, 0)
+        sum_x = sum(float(p[0]) for p in pts)
+        sum_y = sum(float(p[1]) for p in pts)
+        n = len(pts)
         local_center = QPointF(sum_x / n, sum_y / n)
         display_rect = self.get_display_rect()
         if display_rect.isNull():
@@ -182,7 +189,7 @@ class Contour:
         :param step_ratio: 扫描步长与字体宽度的比例
         :return: (QPointF or None, float) 显示坐标和竖直距离（局部像素），若未找到则返回 (None, 0)
         """
-        if not self.nurbs_points or len(self.nurbs_points) < 3:
+        if len(self.original_points) < 3:
             return None, 0
 
         # 计算局部像素中的字体宽度和最小尺寸阈值
@@ -196,7 +203,11 @@ class Contour:
         if bbox_width < min_size_local or bbox_height < min_size_local:
             return None, 0
 
-        pts = [(p.x(), p.y()) for p in self.nurbs_points]
+        # 使用原始轮廓点
+        orig_pts = self.original_points.squeeze()
+        if orig_pts.ndim != 2:
+            return None, 0
+        pts = [(float(p[0]), float(p[1])) for p in orig_pts]
         x_min = min(p[0] for p in pts)
         x_max = max(p[0] for p in pts)
         step = max(1.0, font_size_local * step_ratio)
@@ -284,7 +295,7 @@ class Contour:
         :param offset_mm: 标签距离轮廓底部的偏移量（毫米）
         :return: QPointF 显示坐标，如果轮廓无效返回 QPointF(0, 0)
         """
-        if not self.nurbs_points or len(self.nurbs_points) < 3:
+        if len(self.original_points) < 3:
             return QPointF(0, 0)
 
         display_rect = self.get_display_rect()
@@ -368,3 +379,17 @@ class Contour:
         min_font_size = int(min_diameter_px * 0.4)
         max_font_size = int(max_diameter_px * 0.6)
         self.label_font_size = max(min_font_size, min(self.label_font_size, max_font_size))
+
+    def get_export_points(self) -> List[QPointF]:
+        """
+        获取用于DXF导出的轮廓点（始终使用原始轮廓点）
+
+        Returns:
+            List[QPointF]: 用于导出的点列表（原始轮廓点）
+        """
+        # 始终返回原始点
+        if len(self.original_points) > 0:
+            pts = self.original_points.squeeze()
+            if pts.ndim == 2 and pts.shape[1] == 2:
+                return [QPointF(float(p[0]), float(p[1])) for p in pts]
+        return []

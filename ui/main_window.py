@@ -303,13 +303,16 @@ class MainWindow(QMainWindow):
 
         # NURBS拟合，控制点数从界面滑块获取（默认120）
         control_points = self.control_panel.slider_control_points.value() if hasattr(self, 'control_panel') else 120
-        nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
+        nurbs_points, nurbs_curve, quality = AdvancedImageProcessor.smooth_contour_with_nurbs(
             simplified_points,
-            num_control_points=control_points
+            num_control_points=control_points,
+            enable_quality_check=False  # 默认关闭，保持平滑显示
         )
         contour.nurbs_points = nurbs_points
         contour.nurbs_curve = nurbs_curve
         contour.control_points = control_points
+        contour.fit_quality = quality  # 保存质量评估结果供参考
+        contour.use_nurbs_for_export = True  # 默认使用NURBS导出
 
         return contour
 
@@ -500,16 +503,6 @@ class MainWindow(QMainWindow):
 
         # 视图菜单
         view_menu = menubar.addMenu("视图")
-
-        show_original = QAction("显示原始轮廓", self, checkable=True)
-        show_original.setChecked(False)
-        show_original.triggered.connect(self.toggle_original_contour)
-        view_menu.addAction(show_original)
-
-        show_nurbs = QAction("显示NURBS曲线", self, checkable=True)
-        show_nurbs.setChecked(True)
-        show_nurbs.triggered.connect(self.toggle_nurbs_curve)
-        view_menu.addAction(show_nurbs)
 
         show_bounding_box = QAction("显示选中轮廓的包围盒", self, checkable=True)
         show_bounding_box.setChecked(True)
@@ -1386,16 +1379,6 @@ class MainWindow(QMainWindow):
     #     except Exception as e:
     #         print(f"选择轮廓错误: {str(e)}")
 
-    def toggle_original_contour(self, checked):
-        """切换原始轮廓显示"""
-        self.canvas.show_original_contour = checked
-        self.canvas.update()
-
-    def toggle_nurbs_curve(self, checked):
-        """切换NURBS曲线显示"""
-        self.canvas.show_nurbs_curve = checked
-        self.canvas.update()
-
     def toggle_bounding_box(self, checked):
         """切换包围盒显示"""
         self.canvas.show_bounding_box = checked
@@ -1405,6 +1388,17 @@ class MainWindow(QMainWindow):
         """切换标号显示"""
         self.canvas.show_labels = checked
         self.canvas.update()
+
+    def toggle_export_use_original(self, checked):
+        """切换导出方式：使用原始点或NURBS"""
+        # 更新所有轮廓的导出方式
+        for contour in self.canvas.contours:
+            contour.use_nurbs_for_export = not checked  # checked=True时使用原始点
+        # 更新状态栏提示
+        if checked:
+            self.statusBar().showMessage("导出模式：使用原始轮廓点（保留完整细节）", 3000)
+        else:
+            self.statusBar().showMessage("导出模式：使用NURBS平滑曲线", 3000)
 
     def show_label_mapping_dialog(self):
         """显示标号映射对话框"""

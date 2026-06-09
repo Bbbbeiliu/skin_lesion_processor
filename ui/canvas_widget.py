@@ -85,11 +85,16 @@ class CanvasWidget(QWidget):
         contour.control_points = control_points  # 保存控制点数量
 
         # 使用 NURBS 拟合（传入控制点数量）
-        nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
-            points, num_control_points=control_points
+        # 默认关闭质量检查，保持画布显示平滑的NURBS曲线
+        nurbs_points, nurbs_curve, quality = AdvancedImageProcessor.smooth_contour_with_nurbs(
+            points, num_control_points=control_points, enable_quality_check=False
         )
         contour.nurbs_points = nurbs_points
         contour.nurbs_curve = nurbs_curve
+        # 保存质量评估结果供参考，但不影响显示
+        contour.fit_quality = quality
+        # 默认使用NURBS导出
+        contour.use_nurbs_for_export = True
 
         self.contours.append(contour)
         self.update()
@@ -220,30 +225,29 @@ class CanvasWidget(QWidget):
                         path.closeSubpath()
                         painter.drawPath(path)
 
-            # 绘制NURBS曲线
-            if self.show_nurbs_curve and contour.nurbs_points:
-                # 根据是否选中设置颜色和线宽
-                if contour.is_selected:
-                    pen_color = QColor(0, 100, 255)  # 深蓝色
-                    pen_width = 4 / min(scale_x, scale_y)
-                else:
-                    # 使用轮廓的原始颜色
-                    pen_color = contour.color
-                    pen_width = 3 / min(scale_x, scale_y)
+            # 绘制轮廓（直接使用原始轮廓点）
+            # 根据是否选中设置颜色和线宽
+            if contour.is_selected:
+                pen_color = QColor(0, 100, 255)  # 深蓝色
+                pen_width = 4 / min(scale_x, scale_y)
+            else:
+                # 使用轮廓的原始颜色
+                pen_color = contour.color
+                pen_width = 3 / min(scale_x, scale_y)
 
-                painter.setPen(QPen(pen_color, pen_width))
+            painter.setPen(QPen(pen_color, pen_width))
 
-                path = QPainterPath()
-                if contour.nurbs_points:
-                    path.moveTo(contour.nurbs_points[0])
-                    for point in contour.nurbs_points[1:]:
-                        path.lineTo(point)
+            path = QPainterPath()
+            if len(contour.original_points) > 0:
+                points = contour.original_points.squeeze()
+                if points.ndim == 2:
+                    path.moveTo(float(points[0][0]), float(points[0][1]))
+                    for i in range(1, len(points)):
+                        path.lineTo(float(points[i][0]), float(points[i][1]))
 
-                    # 确保闭合
-                    if not path.isEmpty() and contour.nurbs_points[0] != contour.nurbs_points[-1]:
-                        path.lineTo(contour.nurbs_points[0])
-
-                    painter.drawPath(path)
+                    if not path.isEmpty():
+                        path.closeSubpath()
+                        painter.drawPath(path)
 
             painter.restore()
 
@@ -917,15 +921,18 @@ class CanvasWidget(QWidget):
         if len(contour.original_points) < 3:
             return
 
-        # 调用拟合函数
-        nurbs_points, nurbs_curve = AdvancedImageProcessor.smooth_contour_with_nurbs(
+        # 调用拟合函数（默认关闭质量检查）
+        nurbs_points, nurbs_curve, quality = AdvancedImageProcessor.smooth_contour_with_nurbs(
             contour.original_points,
             precision=0.5,  # 此处 precision 不再起决定作用，但函数需要
-            num_control_points=num_control_points
+            num_control_points=num_control_points,
+            enable_quality_check=False
         )
         contour.nurbs_points = nurbs_points
         contour.nurbs_curve = nurbs_curve
         contour.control_points = num_control_points  # 保存当前点数
+        contour.fit_quality = quality  # 保存质量评估结果供参考
+        contour.use_nurbs_for_export = True  # 默认使用NURBS导出
 
         self.contour_changed.emit()
 

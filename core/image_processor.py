@@ -22,6 +22,93 @@ except ImportError:
 class AdvancedImageProcessor:
     """高级图像处理器，提供更好的轮廓拟合"""
 
+    # 默认质量评估阈值
+    DEFAULT_MAX_DEVIATION_PX = 2.0  # 最大偏差（像素）
+    DEFAULT_RELATIVE_ERROR = 0.01  # 相对误差（1%）
+    DEFAULT_MIN_ORIGINAL_POINTS = 20  # 最小原始点数（少于20点直接用原始）
+
+    @staticmethod
+    def evaluate_nurbs_fit_quality(original_points: np.ndarray, nurbs_points: List[QPointF],
+                                   max_deviation_px: float = None,
+                                   relative_error: float = None) -> dict:
+        """
+        评估NURBS拟合质量
+
+        Args:
+            original_points: 原始轮廓点 (numpy数组)
+            nurbs_points: NURBS拟合点列表 (QPointF列表)
+            max_deviation_px: 允许的最大偏差（像素），None则使用默认值
+            relative_error: 允许的相对误差，None则使用默认值
+
+        Returns:
+            dict: {
+                'max_deviation': 最大偏差（像素）,
+                'avg_deviation': 平均偏差（像素）,
+                'relative_error': 相对误差（相对于轮廓尺寸）,
+                'passed': 是否通过质量检查,
+                'use_nurbs': 是否建议使用NURBS (True=用NURBS, False=用原始点)
+            }
+        """
+        if not nurbs_points or len(nurbs_points) < 3:
+            return {
+                'max_deviation': float('inf'),
+                'avg_deviation': float('inf'),
+                'relative_error': 1.0,
+                'passed': False,
+                'use_nurbs': False
+            }
+
+        # 使用默认阈值
+        if max_deviation_px is None:
+            max_deviation_px = AdvancedImageProcessor.DEFAULT_MAX_DEVIATION_PX
+        if relative_error is None:
+            relative_error = AdvancedImageProcessor.DEFAULT_RELATIVE_ERROR
+
+        # 确保原始点格式正确
+        orig_pts = original_points.squeeze()
+        if orig_pts.ndim != 2:
+            orig_pts = orig_pts.reshape(-1, 2)
+
+        # 计算轮廓包围盒尺寸
+        min_x = np.min(orig_pts[:, 0])
+        max_x = np.max(orig_pts[:, 0])
+        min_y = np.min(orig_pts[:, 1])
+        max_y = np.max(orig_pts[:, 1])
+        bbox_size = max(max_x - min_x, max_y - min_y)
+
+        if bbox_size < 1:
+            bbox_size = 1
+
+        # 将NURBS点转为numpy数组
+        nurbs_pts = np.array([[p.x(), p.y()] for p in nurbs_points])
+
+        # 计算每个原始点到NURBS曲线的最小距离
+        deviations = []
+        for orig_pt in orig_pts:
+            # 计算到所有NURBS点的距离，取最小值
+            distances = np.sqrt(np.sum((nurbs_pts - orig_pt) ** 2, axis=1))
+            min_dist = np.min(distances)
+            deviations.append(min_dist)
+
+        deviations = np.array(deviations)
+
+        # 计算统计指标
+        max_deviation = np.max(deviations)
+        avg_deviation = np.mean(deviations)
+        rel_error = max_deviation / bbox_size
+
+        # 判断是否通过质量检查
+        passed = (max_deviation <= max_deviation_px and rel_error <= relative_error)
+
+        return {
+            'max_deviation': float(max_deviation),
+            'avg_deviation': float(avg_deviation),
+            'relative_error': float(rel_error),
+            'bbox_size': float(bbox_size),
+            'passed': passed,
+            'use_nurbs': passed
+        }
+
     @staticmethod
     def load_and_process_image(image_path: str, kernel_size: int = 3) -> List[Tuple[np.ndarray, str]]:
         """
@@ -135,15 +222,27 @@ class AdvancedImageProcessor:
 
     @staticmethod
     def smooth_contour_with_nurbs(points: np.ndarray, precision: float = 0.5,
-                                  num_control_points: Optional[int] = None) -> Tuple[List[QPointF], Any]:
+                                  num_control_points: Optional[int] = None,
+                                  enable_quality_check: bool = True) -> Tuple[List[QPointF], Any, dict]:
         """
         使用闭合NURBS曲线平滑轮廓，控制点按曲率自适应采样
+
         Args:
             points: 原始轮廓点 (numpy数组，形状为 (N, 2) 或 (N, 1, 2))
             precision: 拟合精度 (0.0-1.0) - 影响简化容差和采样点数量
             num_control_points: 指定的控制点数量（优先级高于 precision）
+            enable_quality_check: 是否启用质量检查（自适应选择原始点或NURBS点）
+
         Returns:
-            (NURBS曲线点列表, NURBS曲线对象) 元组
+            (输出点列表, NURBS曲线对象, 质量评估结果) 元组
+            - 质量检查启用时，输出点根据质量自动选择（NURBS或原始点）
+            - 质量评估结果 dict: {
+                'max_deviation': 最大偏差（像素）,
+                'avg_deviation': 平均偏差（像素）,
+                'relative_error': 相对误差,
+                'passed': 是否通过质量检查,
+                'use_nurbs': 最终是否使用了NURBS
+              }
         """
         if not GEOMDL_AVAILABLE:
             print("警告: geomdl库未安装，使用贝塞尔曲线替代")
@@ -223,14 +322,36 @@ class AdvancedImageProcessor:
             if len(nurbs_points) > 1 and nurbs_points[0] != nurbs_points[-1]:
                 nurbs_points.append(nurbs_points[0])
 
-            return nurbs_points, curve
+            # --- 质量评估和自适应选择 ---
+            if enable_quality_check:
+                quality = AdvancedImageProcessor.evaluate_nurbs_fit_quality(points, nurbs_points)
+
+                # 如果原始点太少，直接使用NURBS
+                if len(points) < AdvancedImageProcessor.DEFAULT_MIN_ORIGINAL_POINTS:
+                    quality['use_nurbs'] = True
+                    quality['reason'] = 'original_points_too_few'
+                    output_points = nurbs_points
+                elif quality['use_nurbs']:
+                    quality['reason'] = 'quality_passed'
+                    output_points = nurbs_points
+                else:
+                    quality['reason'] = 'quality_failed'
+                    # 质量不达标，使用原始点
+                    output_points = [QPointF(float(p[0]), float(p[1])) for p in points]
+
+                return output_points, curve, quality
+            else:
+                # 不启用质量检查，直接返回NURBS点
+                quality = {'use_nurbs': True, 'reason': 'quality_check_disabled'}
+                return nurbs_points, curve, quality
 
         except Exception as e:
             print(f"NURBS曲线拟合错误: {str(e)}")
             traceback.print_exc()
             # 失败时回退到贝塞尔曲线
             _, nurbs_points = AdvancedImageProcessor.smooth_contour_with_cubic_bezier(points, int(precision * 40 + 10))
-            return nurbs_points, None
+            quality = {'use_nurbs': False, 'reason': 'fitting_error', 'error': str(e)}
+            return nurbs_points, None, quality
 
     @staticmethod
     def smooth_contour_with_cubic_bezier(points: np.ndarray, num_control_points: int = 20) -> Tuple[

@@ -41,11 +41,21 @@ class DXFExporter:
         print(f"标号字体: {label_font_size_mm}mm, 最小尺寸阈值: {label_min_size_mm}mm")
         print(f"全局缩放因子: {SCALE_FACTOR:.3f} (1/2.3)")
 
+        # 统计计数器
+        exported_count = 0
+        skipped_count = 0
+
         # 添加每个轮廓
         for i, contour in enumerate(contours):
-            if not contour.nurbs_points:
-                print(f"轮廓 {i} 无NURBS点，跳过")
+            # 直接使用原始轮廓点进行导出
+            export_points = contour.get_export_points()
+            if not export_points:
+                print(f"轮廓 {i} 无导出点，跳过")
+                skipped_count += 1
                 continue
+
+            # 统计
+            exported_count += 1
 
             # 获取轮廓在画布上的显示矩形
             display_rect = contour.get_display_rect()
@@ -54,17 +64,17 @@ class DXFExporter:
             print(f"  画布位置: ({display_rect.x():.1f}, {display_rect.y():.1f}) 像素")
             print(f"  画布尺寸: {display_rect.width():.1f}x{display_rect.height():.1f} 像素")
             print(f"  轮廓缩放: {contour.scale:.3f}")
-            print(f"  NURBS点数: {len(contour.nurbs_points)}")
+            print(f"  原始点数: {len(export_points)}")
 
-            # 将NURBS点转换为DXF点（毫米单位），并整体缩放
+            # 将原始轮廓点转换为DXF点（毫米单位），并整体缩放
             points = []
             scale = contour.scale
             bbox = contour.bounding_box
 
-            for j, nurbs_point in enumerate(contour.nurbs_points):
+            for j, pt in enumerate(export_points):
                 # 计算画布上的显示坐标
-                x_px = display_rect.left() + (nurbs_point.x() - bbox.left()) * scale
-                y_px = display_rect.top() + (nurbs_point.y() - bbox.top()) * scale
+                x_px = display_rect.left() + (pt.x() - bbox.left()) * scale
+                y_px = display_rect.top() + (pt.y() - bbox.top()) * scale
 
                 # 转换为毫米并缩放
                 x_mm = x_px * 10 / pixels_per_cm * SCALE_FACTOR
@@ -78,7 +88,7 @@ class DXFExporter:
                 # 打印前几个点用于调试
                 if j < 3:
                     print(
-                        f"    点 {j}: 局部({nurbs_point.x():.1f}, {nurbs_point.y():.1f}) -> 画布({x_px:.1f}, {y_px:.1f}) -> 缩放后DXF({x_mm:.1f}, {y_mm:.1f})")
+                        f"    点 {j}: 局部({pt.x():.1f}, {pt.y():.1f}) -> 画布({x_px:.1f}, {y_px:.1f}) -> 缩放后DXF({x_mm:.1f}, {y_mm:.1f})")
 
             # 创建闭合的LWPolyline
             if len(points) >= 2:
@@ -130,7 +140,10 @@ class DXFExporter:
 
         # 保存文件
         doc.saveas(filename)
-        print(f"\n成功导出 {len([c for c in contours if c.nurbs_points])} 个轮廓到 {filename}")
+        print(f"\n=== DXF导出统计 ===")
+        print(f"总轮廓数: {len(contours)}, 成功导出: {exported_count}, 跳过: {skipped_count}")
+        print(f"输出方式: 原始轮廓点（保留完整形状细节）")
+        print(f"文件已保存: {filename}")
         print(f"缩放后DXF文件有效尺寸: 约 {150 * SCALE_FACTOR:.1f}mm x {150 * SCALE_FACTOR:.1f}mm (原150mm)")
 
         return True
