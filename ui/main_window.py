@@ -2004,34 +2004,44 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "选中轮廓没有来源图像信息！")
                 return
 
-            # 查找原始图片文件夹
-            if not self.current_overlay_dir and self.image_files:
-                mask_dir = Path(self.image_files[0]).parent
-                overlay_dir = mask_dir.parent / "overlays"
-                if overlay_dir.exists():
-                    self.current_overlay_dir = str(overlay_dir)
-                else:
-                    QMessageBox.warning(self, "警告", "找不到原始图片文件夹（overlays）！")
+            overlay_path = None
+
+            # 优先使用 overlay_map（云端数据）
+            if hasattr(self, 'overlay_map') and source_image in self.overlay_map:
+                overlay_path = Path(self.overlay_map[source_image])
+            else:
+                # 回退到本地文件系统查找
+                # 查找原始图片文件夹
+                if not self.current_overlay_dir and self.image_files:
+                    mask_dir = Path(self.image_files[0]).parent
+                    overlay_dir = mask_dir.parent / "overlays"
+                    if overlay_dir.exists():
+                        self.current_overlay_dir = str(overlay_dir)
+                    else:
+                        QMessageBox.warning(self, "警告", "找不到原始图片文件夹（overlays），且overlay_map中也没有对应数据！")
+                        return
+                elif not self.current_overlay_dir:
+                    QMessageBox.warning(self, "警告", "没有可用的overlay数据源！")
                     return
 
-            # 从掩膜文件名构建原始图片文件名
-            if '_mask' in source_image:
-                overlay_filename = source_image.replace('_mask', '_overlay')
-            else:
-                base_name = Path(source_image).stem
-                overlay_filename = f"{base_name}_overlay.png"
+                # 从掩膜文件名构建原始图片文件名
+                if '_mask' in source_image:
+                    overlay_filename = source_image.replace('_mask', '_overlay')
+                else:
+                    base_name = Path(source_image).stem
+                    overlay_filename = f"{base_name}_overlay.png"
 
-            # 查找原始图片文件
-            overlay_path = Path(self.current_overlay_dir) / overlay_filename
-            if not overlay_path.exists():
-                for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
-                    alt_path = Path(self.current_overlay_dir) / f"{Path(overlay_filename).stem}{ext}"
-                    if alt_path.exists():
-                        overlay_path = alt_path
-                        break
+                # 查找原始图片文件
+                overlay_path = Path(self.current_overlay_dir) / overlay_filename
+                if not overlay_path.exists():
+                    for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                        alt_path = Path(self.current_overlay_dir) / f"{Path(overlay_filename).stem}{ext}"
+                        if alt_path.exists():
+                            overlay_path = alt_path
+                            break
 
-            if not overlay_path.exists():
-                QMessageBox.warning(self, "警告", f"找不到对应的原始图片：{overlay_filename}")
+            if not overlay_path or not overlay_path.exists():
+                QMessageBox.warning(self, "警告", f"找不到对应的原始图片！\nsource_image: {source_image}")
                 return
 
             # 处理原始图片获取比例尺
