@@ -1,4 +1,4 @@
-# config.py
+﻿# config.py
 import os
 
 # 基础路径（相对于此文件所在目录）

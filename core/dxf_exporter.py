@@ -31,6 +31,24 @@ class DXFExporter:
         doc.layers.add("DIMENSIONS", color=5)
         doc.layers.add("LABELS", color=7)  # 黑色，与画布一致
 
+        # 添加中文字体样式（尝试多个常见中文字体）
+        # EzCAD会在系统字体目录和自己的字体目录中搜索这些字体文件
+        chinese_fonts = ["SimSun.ttf", "simhei.ttf", "msyh.ttf", "simkai.ttf", "STSONG.TTF"]
+        chinese_style_name = "ChineseLabel"
+
+        for font_name in chinese_fonts:
+            try:
+                doc.styles.add(chinese_style_name, font=font_name)
+                print(f"成功创建中文文本样式: {chinese_style_name}, 字体: {font_name}")
+                break
+            except Exception as e:
+                continue
+        else:
+            # 如果所有中文字体都失败，使用默认样式
+            print(f"警告: 无法设置中文字体，将使用默认样式（可能导致中文显示为乱码）")
+            print(f"提示: 请确保EzCAD软件的字体目录中有中文字体文件，如: SimSun.ttf, simhei.ttf, msyh.ttf")
+            chinese_style_name = "STANDARD"
+
         # 设置单位：毫米
         doc.header['$INSUNITS'] = 4
 
@@ -124,6 +142,7 @@ class DXFExporter:
                         label_text,
                         dxfattribs={
                             'layer': 'LABELS',
+                            'style': chinese_style_name,  # 使用中文字体样式
                             'height': label_font_size_mm * SCALE_FACTOR,  # 标号字体高度也缩放
                             'color': 7,  # 黑色
                         }
@@ -145,5 +164,12 @@ class DXFExporter:
         print(f"输出方式: 原始轮廓点（保留完整形状细节）")
         print(f"文件已保存: {filename}")
         print(f"缩放后DXF文件有效尺寸: 约 {150 * SCALE_FACTOR:.1f}mm x {150 * SCALE_FACTOR:.1f}mm (原150mm)")
+
+        # 保存后，将文件编码从 UTF-8 转换为 GBK（ANSI）
+        with open(filename, 'r', encoding='utf-8') as f:
+            content = f.read()
+        with open(filename, 'w', encoding='gbk', errors='ignore') as f:
+            f.write(content)
+        print(f"已转换文件编码为 GBK (ANSI): {filename}")
 
         return True

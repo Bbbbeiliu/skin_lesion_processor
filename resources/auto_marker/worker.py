@@ -29,7 +29,16 @@ def execute_full_job(job, gui_callback=None):
             job['message'] = '任务被用户终止'
         else:
             job['status'] = 'completed'
-            job['message'] = f'任务完成\n{result["stdout"][:500]}'
+            # 提取日志文件路径（如果存在）
+            log_file = ""
+            for line in result["stdout"].split('\n'):
+                if '日志文件保存位置:' in line:
+                    log_file = line.split('日志文件保存位置:')[-1].strip()
+                    break
+
+            # 显示更多输出内容，并添加日志文件路径
+            stdout_summary = result["stdout"][-1000:] if len(result["stdout"]) > 1000 else result["stdout"]
+            job['message'] = f'任务完成\n{stdout_summary}\n\n完整日志: {log_file}'
     else:
         if stop_event and stop_event.is_set():
             job['status'] = 'failed'

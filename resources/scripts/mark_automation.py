@@ -6,9 +6,29 @@ import os
 import sys
 import io
 import time
+import logging
+from datetime import datetime
 
+# 设置stdout/stderr编码
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# 设置日志
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto_marker", "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_FILE = os.path.join(LOG_DIR, f"mark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description='EzCAD2 自动化标刻工具')
@@ -157,7 +177,17 @@ def main():
         if not os.path.isfile(dxf_path):
             print(f"错误：DXF文件不存在: {dxf_path}")
             return False, 0, 0
-
+            """
+            lmc1_AddFileToLib（pFileName,	//文件名称
+        					pEntName,// 文件对象名称
+        					  dPosX, //文件左下角基点x坐标
+        					  dPosY, //文件左下角基点y坐标
+        					  dPosZ, //文件z坐标
+        					  nAlign,//对齐方式0－8
+        					  dRatio,//文件缩放比例				  
+        					  nPenNo,//对象使用的加工参数
+        					  bHatchFile);
+            """
         ret = ezd.lmc1_AddFileToLib(dxf_path, ent_name, 0.0, 0.0, 0.0, 0, 1.0, 0, False)
         if ret != 0:
             print(f"导入DXF失败，返回值={ret}")
@@ -279,29 +309,40 @@ def main():
     # ---------- 导入 DXF 并居中 ----------
     print("\n导入 DXF 文件...")
     ok, _, _ = import_dxf_and_center(args.dxf_path, "Content")
-    pen_no = ezd.lmc1_GetPenNumberFromEnt("Content")
-    print(f"对象 'Content' 的实际笔号: {pen_no}")
-    # 在 import_dxf_and_center 之后添加
+
+    # 获取所有对象信息并设置文本笔号（合并循环，减少冗余）
     count = ezd.lmc1_GetEntityCount()
+    logger.info(f"当前数据库中共有 {count} 个对象")
     print(f"当前数据库中共有 {count} 个对象")
+
+    text_count = 0
+    contour_count = 0
     for i in range(count):
         name_buf = ctypes.create_unicode_buffer(256)
         ezd.lmc1_GetEntityName(i, name_buf)
         obj_name = name_buf.value
         pen = ezd.lmc1_GetPenNumberFromEnt(obj_name)
-        print(f"  对象 {i}: '{obj_name}' 笔号 = {pen}")
 
-    # ========== 新增：将所有文本对象（标号）的笔号改为 1 ==========
-    for i in range(count):
-        name_buf = ctypes.create_unicode_buffer(256)
-        ezd.lmc1_GetEntityName(i, name_buf)
-        obj_name = name_buf.value
+        # 尝试获取文本内容判断是否为文本对象
         text_content = ctypes.create_unicode_buffer(1024)
         ret = ezd.lmc1_GetTextByName(obj_name, text_content)
+
         if ret == 0:  # 是文本对象
             ezd.lmc1_SetEntAllChildPen(obj_name, 1)
-            print(f"  已将文本对象 '{obj_name}' 笔号改为 1 (文本: '{text_content.value}')")
-    # ========== 新增结束 ==========
+            log_msg = f"  文本对象: '{obj_name}' 原笔号={pen} → 改为笔号1 (内容: '{text_content.value}')"
+            logger.info(log_msg)
+            print(log_msg)
+            text_count += 1
+        else:
+            log_msg = f"  轮廓对象: '{obj_name}' 笔号={pen}"
+            logger.info(log_msg)
+            print(log_msg)
+            contour_count += 1
+
+    stats_msg = f"统计: {contour_count} 个轮廓对象, {text_count} 个文本对象"
+    logger.info(stats_msg)
+    logger.info(f"日志文件保存位置: {LOG_FILE}")
+    print(stats_msg + "\n")
 
     if not ok:
         ezd.lmc1_Close()
